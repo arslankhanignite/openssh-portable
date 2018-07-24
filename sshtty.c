@@ -1,3 +1,4 @@
+/* $OpenBSD: sshtty.c,v 1.14 2010/01/09 05:04:24 djm Exp $ */
 /*
  * Author: Tatu Ylonen <ylo@cs.hut.fi>
  * Copyright (c) 1995 Tatu Ylonen <ylo@cs.hut.fi>, Espoo, Finland
@@ -35,38 +36,43 @@
  */
 
 #include "includes.h"
-RCSID("$OpenBSD: sshtty.c,v 1.5 2003/09/19 17:43:35 markus Exp $");
 
-#include "sshtty.h"
-#include "log.h"
+#include <sys/types.h>
+#include <stdio.h>
+#include <termios.h>
+#include <pwd.h>
+
+#include "sshpty.h"
 
 static struct termios _saved_tio;
 static int _in_raw_mode = 0;
 
-struct termios
+struct termios *
 get_saved_tio(void)
 {
-	return _saved_tio;
+	return _in_raw_mode ? &_saved_tio : NULL;
 }
 
 void
-leave_raw_mode(void)
+leave_raw_mode(int quiet)
 {
 	if (!_in_raw_mode)
 		return;
-	if (tcsetattr(fileno(stdin), TCSADRAIN, &_saved_tio) == -1)
-		perror("tcsetattr");
-	else
+	if (tcsetattr(fileno(stdin), TCSADRAIN, &_saved_tio) == -1) {
+		if (!quiet)
+			perror("tcsetattr");
+	} else
 		_in_raw_mode = 0;
 }
 
 void
-enter_raw_mode(void)
+enter_raw_mode(int quiet)
 {
 	struct termios tio;
 
 	if (tcgetattr(fileno(stdin), &tio) == -1) {
-		perror("tcgetattr");
+		if (!quiet)
+			perror("tcgetattr");
 		return;
 	}
 	_saved_tio = tio;
@@ -82,8 +88,9 @@ enter_raw_mode(void)
 	tio.c_oflag &= ~OPOST;
 	tio.c_cc[VMIN] = 1;
 	tio.c_cc[VTIME] = 0;
-	if (tcsetattr(fileno(stdin), TCSADRAIN, &tio) == -1)
-		perror("tcsetattr");
-	else
+	if (tcsetattr(fileno(stdin), TCSADRAIN, &tio) == -1) {
+		if (!quiet)
+			perror("tcsetattr");
+	} else
 		_in_raw_mode = 1;
 }

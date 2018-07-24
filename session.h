@@ -1,4 +1,4 @@
-/*	$OpenBSD: session.h,v 1.21 2003/09/23 20:17:11 markus Exp $	*/
+/* $OpenBSD: session.h,v 1.31 2013/10/14 21:20:52 djm Exp $ */
 
 /*
  * Copyright (c) 2000, 2001 Markus Friedl.  All rights reserved.
@@ -31,17 +31,17 @@ typedef struct Session Session;
 struct Session {
 	int	used;
 	int	self;
+	int	next_unused;
 	struct passwd *pw;
 	Authctxt *authctxt;
 	pid_t	pid;
+
 	/* tty */
 	char	*term;
 	int	ptyfd, ttyfd, ptymaster;
 	u_int	row, col, xpixel, ypixel;
 	char	tty[TTYSZ];
-	/* last login */
-	char	hostname[MAXHOSTNAMELEN];
-	time_t	last_login_time;
+
 	/* X11 */
 	u_int	display_number;
 	char	*display;
@@ -50,15 +50,24 @@ struct Session {
 	char	*auth_proto;
 	char	*auth_data;
 	int	single_connection;
+
 	/* proto 2 */
 	int	chanid;
+	int	*x11_chanids;
 	int	is_subsystem;
+	char	*subsys;
+	u_int	num_env;
+	struct {
+		char	*name;
+		char	*val;
+	} *env;
 };
 
 void	 do_authenticated(Authctxt *);
 void	 do_cleanup(Authctxt *);
 
 int	 session_open(Authctxt *, int);
+void	 session_unused(int);
 int	 session_input_channel_req(Channel *, const char *);
 void	 session_close_by_pid(pid_t, int);
 void	 session_close_by_channel(int, void *);

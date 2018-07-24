@@ -1,4 +1,4 @@
-/*	$OpenBSD: progressmeter.h,v 1.1 2003/01/10 08:19:07 fgsch Exp $	*/
+/* $OpenBSD: progressmeter.h,v 1.3 2015/01/14 13:54:13 djm Exp $ */
 /*
  * Copyright (c) 2002 Nils Nordman.  All rights reserved.
  *
@@ -23,5 +23,5 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-void	start_progress_meter(char *, off_t, off_t *);
+void	start_progress_meter(const char *, off_t, off_t *);
 void	stop_progress_meter(void);

@@ -1,6 +1,4 @@
-/* OPENBSD ORIGINAL: sys/sys/queue.h */
-
-/*	$OpenBSD: queue.h,v 1.23 2003/06/02 23:28:21 millert Exp $	*/
+/*	$OpenBSD: queue.h,v 1.36 2012/04/11 13:29:14 naddy Exp $	*/
 /*	$NetBSD: queue.h,v 1.11 1996/05/16 05:17:14 mycroft Exp $	*/
 
 /*
@@ -34,16 +32,19 @@
  *	@(#)queue.h	8.5 (Berkeley) 8/20/94
  */
 
+/* OPENBSD ORIGINAL: sys/sys/queue.h */
+
 #ifndef	_FAKE_QUEUE_H_
 #define	_FAKE_QUEUE_H_
 
 /*
- * Ignore all <sys/queue.h> since older platforms have broken/incomplete
- * <sys/queue.h> that are too hard to work around.
+ * Require for OS/X and other platforms that have old/broken/incomplete
+ * <sys/queue.h>.
  */
 #undef SLIST_HEAD
 #undef SLIST_HEAD_INITIALIZER
 #undef SLIST_ENTRY
+#undef SLIST_FOREACH_PREVPTR
 #undef SLIST_FIRST
 #undef SLIST_END
 #undef SLIST_EMPTY
@@ -54,6 +55,7 @@
 #undef SLIST_INSERT_HEAD
 #undef SLIST_REMOVE_HEAD
 #undef SLIST_REMOVE
+#undef SLIST_REMOVE_NEXT
 #undef LIST_HEAD
 #undef LIST_HEAD_INITIALIZER
 #undef LIST_ENTRY
@@ -165,6 +167,12 @@
  * For details on the use of these macros, see the queue(3) manual page.
  */
 
+#if defined(QUEUE_MACRO_DEBUG) || (defined(_KERNEL) && defined(DIAGNOSTIC))
+#define _Q_INVALIDATE(a) (a) = ((void *)-1)
+#else
+#define _Q_INVALIDATE(a)
+#endif
+
 /*
  * Singly-linked List definitions.
  */
@@ -194,6 +202,11 @@ struct {								\
 	    (var) != SLIST_END(head);					\
 	    (var) = SLIST_NEXT(var, field))
 
+#define	SLIST_FOREACH_SAFE(var, head, field, tvar)			\
+	for ((var) = SLIST_FIRST(head);				\
+	    (var) && ((tvar) = SLIST_NEXT(var, field), 1);		\
+	    (var) = (tvar))
+
 /*
  * Singly-linked List functions.
  */
@@ -211,6 +224,10 @@ struct {								\
 	(head)->slh_first = (elm);					\
 } while (0)
 
+#define	SLIST_REMOVE_AFTER(elm, field) do {				\
+	(elm)->field.sle_next = (elm)->field.sle_next->field.sle_next;	\
+} while (0)
+
 #define	SLIST_REMOVE_HEAD(head, field) do {				\
 	(head)->slh_first = (head)->slh_first->field.sle_next;		\
 } while (0)
@@ -218,13 +235,14 @@ struct {								\
 #define SLIST_REMOVE(head, elm, type, field) do {			\
 	if ((head)->slh_first == (elm)) {				\
 		SLIST_REMOVE_HEAD((head), field);			\
-	}								\
-	else {								\
+	} else {							\
 		struct type *curelm = (head)->slh_first;		\
-		while( curelm->field.sle_next != (elm) )		\
+									\
+		while (curelm->field.sle_next != (elm))			\
 			curelm = curelm->field.sle_next;		\
 		curelm->field.sle_next =				\
 		    curelm->field.sle_next->field.sle_next;		\
+		_Q_INVALIDATE((elm)->field.sle_next);			\
 	}								\
 } while (0)
 
@@ -257,6 +275,11 @@ struct {								\
 	for((var) = LIST_FIRST(head);					\
 	    (var)!= LIST_END(head);					\
 	    (var) = LIST_NEXT(var, field))
+
+#define	LIST_FOREACH_SAFE(var, head, field, tvar)			\
+	for ((var) = LIST_FIRST(head);				\
+	    (var) && ((tvar) = LIST_NEXT(var, field), 1);		\
+	    (var) = (tvar))
 
 /*
  * List functions.
@@ -292,6 +315,8 @@ struct {								\
 		(elm)->field.le_next->field.le_prev =			\
 		    (elm)->field.le_prev;				\
 	*(elm)->field.le_prev = (elm)->field.le_next;			\
+	_Q_INVALIDATE((elm)->field.le_prev);				\
+	_Q_INVALIDATE((elm)->field.le_next);				\
 } while (0)
 
 #define LIST_REPLACE(elm, elm2, field) do {				\
@@ -300,6 +325,8 @@ struct {								\
 		    &(elm2)->field.le_next;				\
 	(elm2)->field.le_prev = (elm)->field.le_prev;			\
 	*(elm2)->field.le_prev = (elm2);				\
+	_Q_INVALIDATE((elm)->field.le_prev);				\
+	_Q_INVALIDATE((elm)->field.le_next);				\
 } while (0)
 
 /*
@@ -332,6 +359,11 @@ struct {								\
 	    (var) != SIMPLEQ_END(head);					\
 	    (var) = SIMPLEQ_NEXT(var, field))
 
+#define	SIMPLEQ_FOREACH_SAFE(var, head, field, tvar)			\
+	for ((var) = SIMPLEQ_FIRST(head);				\
+	    (var) && ((tvar) = SIMPLEQ_NEXT(var, field), 1);		\
+	    (var) = (tvar))
+
 /*
  * Simple queue functions.
  */
@@ -358,9 +390,15 @@ struct {								\
 	(listelm)->field.sqe_next = (elm);				\
 } while (0)
 
-#define SIMPLEQ_REMOVE_HEAD(head, elm, field) do {			\
-	if (((head)->sqh_first = (elm)->field.sqe_next) == NULL)	\
+#define SIMPLEQ_REMOVE_HEAD(head, field) do {			\
+	if (((head)->sqh_first = (head)->sqh_first->field.sqe_next) == NULL) \
 		(head)->sqh_last = &(head)->sqh_first;			\
+} while (0)
+
+#define SIMPLEQ_REMOVE_AFTER(head, elm, field) do {			\
+	if (((elm)->field.sqe_next = (elm)->field.sqe_next->field.sqe_next) \
+	    == NULL)							\
+		(head)->sqh_last = &(elm)->field.sqe_next;		\
 } while (0)
 
 /*
@@ -400,10 +438,23 @@ struct {								\
 	    (var) != TAILQ_END(head);					\
 	    (var) = TAILQ_NEXT(var, field))
 
-#define TAILQ_FOREACH_REVERSE(var, head, field, headname)		\
+#define	TAILQ_FOREACH_SAFE(var, head, field, tvar)			\
+	for ((var) = TAILQ_FIRST(head);					\
+	    (var) != TAILQ_END(head) &&					\
+	    ((tvar) = TAILQ_NEXT(var, field), 1);			\
+	    (var) = (tvar))
+
+
+#define TAILQ_FOREACH_REVERSE(var, head, headname, field)		\
 	for((var) = TAILQ_LAST(head, headname);				\
 	    (var) != TAILQ_END(head);					\
 	    (var) = TAILQ_PREV(var, headname, field))
+
+#define	TAILQ_FOREACH_REVERSE_SAFE(var, head, headname, field, tvar)	\
+	for ((var) = TAILQ_LAST(head, headname);			\
+	    (var) != TAILQ_END(head) &&					\
+	    ((tvar) = TAILQ_PREV(var, headname, field), 1);		\
+	    (var) = (tvar))
 
 /*
  * Tail queue functions.
@@ -454,6 +505,8 @@ struct {								\
 	else								\
 		(head)->tqh_last = (elm)->field.tqe_prev;		\
 	*(elm)->field.tqe_prev = (elm)->field.tqe_next;			\
+	_Q_INVALIDATE((elm)->field.tqe_prev);				\
+	_Q_INVALIDATE((elm)->field.tqe_next);				\
 } while (0)
 
 #define TAILQ_REPLACE(head, elm, elm2, field) do {			\
@@ -464,6 +517,8 @@ struct {								\
 		(head)->tqh_last = &(elm2)->field.tqe_next;		\
 	(elm2)->field.tqe_prev = (elm)->field.tqe_prev;			\
 	*(elm2)->field.tqe_prev = (elm2);				\
+	_Q_INVALIDATE((elm)->field.tqe_prev);				\
+	_Q_INVALIDATE((elm)->field.tqe_next);				\
 } while (0)
 
 /*
@@ -500,10 +555,22 @@ struct {								\
 	    (var) != CIRCLEQ_END(head);					\
 	    (var) = CIRCLEQ_NEXT(var, field))
 
+#define	CIRCLEQ_FOREACH_SAFE(var, head, field, tvar)			\
+	for ((var) = CIRCLEQ_FIRST(head);				\
+	    (var) != CIRCLEQ_END(head) &&				\
+	    ((tvar) = CIRCLEQ_NEXT(var, field), 1);			\
+	    (var) = (tvar))
+
 #define CIRCLEQ_FOREACH_REVERSE(var, head, field)			\
 	for((var) = CIRCLEQ_LAST(head);					\
 	    (var) != CIRCLEQ_END(head);					\
 	    (var) = CIRCLEQ_PREV(var, field))
+
+#define	CIRCLEQ_FOREACH_REVERSE_SAFE(var, head, headname, field, tvar)	\
+	for ((var) = CIRCLEQ_LAST(head, headname);			\
+	    (var) != CIRCLEQ_END(head) && 				\
+	    ((tvar) = CIRCLEQ_PREV(var, headname, field), 1);		\
+	    (var) = (tvar))
 
 /*
  * Circular queue functions.
@@ -564,6 +631,8 @@ struct {								\
 	else								\
 		(elm)->field.cqe_prev->field.cqe_next =			\
 		    (elm)->field.cqe_next;				\
+	_Q_INVALIDATE((elm)->field.cqe_prev);				\
+	_Q_INVALIDATE((elm)->field.cqe_next);				\
 } while (0)
 
 #define CIRCLEQ_REPLACE(head, elm, elm2, field) do {			\
@@ -577,6 +646,8 @@ struct {								\
 		(head).cqh_first = (elm2);				\
 	else								\
 		(elm2)->field.cqe_prev->field.cqe_next = (elm2);	\
+	_Q_INVALIDATE((elm)->field.cqe_prev);				\
+	_Q_INVALIDATE((elm)->field.cqe_next);				\
 } while (0)
 
 #endif	/* !_FAKE_QUEUE_H_ */

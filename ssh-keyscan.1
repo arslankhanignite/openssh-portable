@@ -1,4 +1,4 @@
-.\"	$OpenBSD: ssh-keyscan.1,v 1.17 2003/06/10 09:12:11 jmc Exp $
+.\"	$OpenBSD: ssh-keyscan.1,v 1.36 2014/08/30 15:33:50 sobrado Exp $
 .\"
 .\" Copyright 1995, 1996 by David Mazieres <dm@lcs.mit.edu>.
 .\"
@@ -6,7 +6,7 @@
 .\" permitted provided that due credit is given to the author and the
 .\" OpenBSD project by leaving this copyright notice intact.
 .\"
-.Dd January 1, 1996
+.Dd $Mdocdate: August 30 2014 $
 .Dt SSH-KEYSCAN 1
 .Os
 .Sh NAME
@@ -15,13 +15,13 @@
 .Sh SYNOPSIS
 .Nm ssh-keyscan
 .Bk -words
-.Op Fl v46
+.Op Fl 46Hv
+.Op Fl f Ar file
 .Op Fl p Ar port
 .Op Fl T Ar timeout
 .Op Fl t Ar type
-.Op Fl f Ar file
 .Op Ar host | addrlist namelist
-.Op Ar ...
+.Ar ...
 .Ek
 .Sh DESCRIPTION
 .Nm
@@ -46,12 +46,41 @@ scanning process involve any encryption.
 .Pp
 The options are as follows:
 .Bl -tag -width Ds
+.It Fl 4
+Forces
+.Nm
+to use IPv4 addresses only.
+.It Fl 6
+Forces
+.Nm
+to use IPv6 addresses only.
+.It Fl f Ar file
+Read hosts or
+.Dq addrlist namelist
+pairs from
+.Ar file ,
+one per line.
+If
+.Pa -
+is supplied instead of a filename,
+.Nm
+will read hosts or
+.Dq addrlist namelist
+pairs from the standard input.
+.It Fl H
+Hash all hostnames and addresses in the output.
+Hashed names may be used normally by
+.Nm ssh
+and
+.Nm sshd ,
+but they do not reveal identifying information should the file's contents
+be disclosed.
 .It Fl p Ar port
 Port to connect to on the remote host.
 .It Fl T Ar timeout
 Set the timeout for connection attempts.
 If
-.Pa timeout
+.Ar timeout
 seconds have elapsed since a connection was initiated to a host or since the
 last time anything was read from that host, then the connection is
 closed and the host in question considered unavailable.
@@ -61,77 +90,66 @@ Specifies the type of the key to fetch from the scanned hosts.
 The possible values are
 .Dq rsa1
 for protocol version 1 and
-.Dq rsa
+.Dq dsa ,
+.Dq ecdsa ,
+.Dq ed25519 ,
 or
-.Dq dsa
+.Dq rsa
 for protocol version 2.
 Multiple values may be specified by separating them with commas.
-The default is
-.Dq rsa1 .
-.It Fl f Ar filename
-Read hosts or
-.Pa addrlist namelist
-pairs from this file, one per line.
-If
-.Pa -
-is supplied instead of a filename,
-.Nm
-will read hosts or
-.Pa addrlist namelist
-pairs from the standard input.
+The default is to fetch
+.Dq rsa ,
+.Dq ecdsa ,
+and
+.Dq ed25519
+keys.
 .It Fl v
 Verbose mode.
 Causes
 .Nm
 to print debugging messages about its progress.
-.It Fl 4
-Forces
-.Nm
-to use IPv4 addresses only.
-.It Fl 6
-Forces
-.Nm
-to use IPv6 addresses only.
 .El
 .Sh SECURITY
-If a ssh_known_hosts file is constructed using
+If an ssh_known_hosts file is constructed using
 .Nm
 without verifying the keys, users will be vulnerable to
-.I man in the middle
+.Em man in the middle
 attacks.
 On the other hand, if the security model allows such a risk,
 .Nm
 can help in the detection of tampered keyfiles or man in the middle
 attacks which have begun after the ssh_known_hosts file was created.
 .Sh FILES
-.Pa Input format:
+Input format:
 .Bd -literal
 1.2.3.4,1.2.4.4 name.my.domain,name,n.my.domain,n,1.2.3.4,1.2.4.4
 .Ed
 .Pp
-.Pa Output format for rsa1 keys:
+Output format for RSA1 keys:
 .Bd -literal
 host-or-namelist bits exponent modulus
 .Ed
 .Pp
-.Pa Output format for rsa and dsa keys:
+Output format for RSA, DSA, ECDSA, and Ed25519 keys:
 .Bd -literal
 host-or-namelist keytype base64-encoded-key
 .Ed
 .Pp
 Where
-.Pa keytype
+.Ar keytype
 is either
-.Dq ssh-rsa
+.Dq ecdsa-sha2-nistp256 ,
+.Dq ecdsa-sha2-nistp384 ,
+.Dq ecdsa-sha2-nistp521 ,
+.Dq ssh-ed25519 ,
+.Dq ssh-dss
 or
-.Dq ssh-dss .
+.Dq ssh-rsa .
 .Pp
 .Pa /etc/ssh/ssh_known_hosts
 .Sh EXAMPLES
-Print the
-.Pa rsa1
-host key for machine
-.Pa hostname :
+Print the rsa host key for machine
+.Ar hostname :
 .Bd -literal
 $ ssh-keyscan hostname
 .Ed
@@ -141,16 +159,17 @@ Find all hosts from the file
 which have new or different keys from those in the sorted file
 .Pa ssh_known_hosts :
 .Bd -literal
-$ ssh-keyscan -t rsa,dsa -f ssh_hosts | \e
+$ ssh-keyscan -t rsa,dsa,ecdsa,ed25519 -f ssh_hosts | \e
 	sort -u - ssh_known_hosts | diff ssh_known_hosts -
 .Ed
 .Sh SEE ALSO
 .Xr ssh 1 ,
 .Xr sshd 8
 .Sh AUTHORS
-.An David Mazieres Aq dm@lcs.mit.edu
+.An -nosplit
+.An David Mazieres Aq Mt dm@lcs.mit.edu
 wrote the initial version, and
-.An Wayne Davison Aq wayned@users.sourceforge.net
+.An Wayne Davison Aq Mt wayned@users.sourceforge.net
 added support for protocol version 2.
 .Sh BUGS
 It generates "Connection closed by remote host" messages on the consoles

@@ -1,4 +1,4 @@
-/* $Id: fake-rfc2553.h,v 1.9 2004/03/10 10:06:33 dtucker Exp $ */
+/* $Id: fake-rfc2553.h,v 1.16 2008/07/14 11:37:37 djm Exp $ */
 
 /*
  * Copyright (C) 2000-2003 Damien Miller.  All rights reserved.
@@ -41,7 +41,10 @@
 #define _FAKE_RFC2553_H
 
 #include "includes.h"
-#include "sys/types.h"
+#include <sys/types.h>
+#if defined(HAVE_NETDB_H)
+# include <netdb.h>
+#endif
 
 /*
  * First, socket and INET6 related definitions 
@@ -74,6 +77,7 @@ struct sockaddr_in6 {
 	u_int16_t	sin6_port;
 	u_int32_t	sin6_flowinfo;
 	struct in6_addr	sin6_addr;
+	u_int32_t	sin6_scope_id;
 };
 #endif /* !HAVE_STRUCT_SOCKADDR_IN6 */
 
@@ -105,6 +109,9 @@ struct sockaddr_in6 {
 #ifndef AI_NUMERICHOST
 # define AI_NUMERICHOST		(1<<2)
 #endif
+#ifndef AI_NUMERICSERV
+# define AI_NUMERICSERV		(1<<3)
+#endif
 
 #ifndef NI_MAXSERV
 # define NI_MAXSERV 32
@@ -114,9 +121,19 @@ struct sockaddr_in6 {
 #endif /* !NI_MAXHOST */
 
 #ifndef EAI_NODATA
-# define EAI_NODATA	1
-# define EAI_MEMORY	2
-# define EAI_NONAME	3
+# define EAI_NODATA	(INT_MAX - 1)
+#endif
+#ifndef EAI_MEMORY
+# define EAI_MEMORY	(INT_MAX - 2)
+#endif
+#ifndef EAI_NONAME
+# define EAI_NONAME	(INT_MAX - 3)
+#endif
+#ifndef EAI_SYSTEM
+# define EAI_SYSTEM	(INT_MAX - 4)
+#endif
+#ifndef EAI_FAMILY
+# define EAI_FAMILY	(INT_MAX - 5)
 #endif
 
 #ifndef HAVE_STRUCT_ADDRINFO
@@ -142,7 +159,7 @@ int getaddrinfo(const char *, const char *,
 #endif /* !HAVE_GETADDRINFO */
 
 #if !defined(HAVE_GAI_STRERROR) && !defined(HAVE_CONST_GAI_STRERROR_PROTO)
-#define gai_strerror(a)		(ssh_gai_strerror(a))
+#define gai_strerror(a)		(_ssh_compat_gai_strerror(a))
 char *gai_strerror(int);
 #endif /* !HAVE_GAI_STRERROR */
 

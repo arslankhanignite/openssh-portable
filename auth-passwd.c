@@ -1,3 +1,4 @@
+/* $OpenBSD: auth-passwd.c,v 1.44 2014/07/15 15:54:14 millert Exp $ */
 /*
  * Author: Tatu Ylonen <ylo@cs.hut.fi>
  * Copyright (c) 1995 Tatu Ylonen <ylo@cs.hut.fi>, Espoo, Finland
@@ -36,16 +37,34 @@
  */
 
 #include "includes.h"
-RCSID("$OpenBSD: auth-passwd.c,v 1.31 2004/01/30 09:48:57 markus Exp $");
+
+#include <sys/types.h>
+
+#include <pwd.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdarg.h>
 
 #include "packet.h"
+#include "buffer.h"
 #include "log.h"
+#include "misc.h"
 #include "servconf.h"
+#include "key.h"
+#include "hostfile.h"
 #include "auth.h"
 #include "auth-options.h"
 
+extern Buffer loginmsg;
 extern ServerOptions options;
-int sys_auth_passwd(Authctxt *, const char *);
+
+#ifdef HAVE_LOGIN_CAP
+extern login_cap_t *lc;
+#endif
+
+
+#define DAY		(24L * 60 * 60) /* 1 day in seconds */
+#define TWO_WEEKS	(2L * 7 * DAY)	/* 2 weeks in seconds */
 
 void
 disable_forwarding(void)
@@ -63,8 +82,10 @@ int
 auth_password(Authctxt *authctxt, const char *password)
 {
 	struct passwd * pw = authctxt->pw;
-	int ok = authctxt->valid;
+	int result, ok = authctxt->valid;
+#if defined(USE_SHADOW) && defined(HAS_SHADOW_EXPIRE)
 	static int expire_checked = 0;
+#endif
 
 #ifndef HAVE_CYGWIN
 	if (pw->pw_uid == 0 && options.permit_root_login != PERMIT_YES)
@@ -82,7 +103,7 @@ auth_password(Authctxt *authctxt, const char *password)
 	}
 #endif
 #ifdef HAVE_CYGWIN
-	if (is_winnt) {
+	{
 		HANDLE hToken = cygwin_logon_user(pw, password);
 
 		if (hToken == INVALID_HANDLE_VALUE)
@@ -91,34 +112,79 @@ auth_password(Authctxt *authctxt, const char *password)
 		return ok;
 	}
 #endif
+#ifdef USE_PAM
+	if (options.use_pam)
+		return (sshpam_auth_passwd(authctxt, password) && ok);
+#endif
 #if defined(USE_SHADOW) && defined(HAS_SHADOW_EXPIRE)
 	if (!expire_checked) {
 		expire_checked = 1;
-		if (auth_shadow_pwexpired(authctxt)) {
-			disable_forwarding();
+		if (auth_shadow_pwexpired(authctxt))
 			authctxt->force_pwchange = 1;
-		}
 	}
 #endif
-		
-	return (sys_auth_passwd(authctxt, password) && ok);
+	result = sys_auth_passwd(authctxt, password);
+	if (authctxt->force_pwchange)
+		disable_forwarding();
+	return (result && ok);
 }
 
 #ifdef BSD_AUTH
+static void
+warn_expiry(Authctxt *authctxt, auth_session_t *as)
+{
+	char buf[256];
+	quad_t pwtimeleft, actimeleft, daysleft, pwwarntime, acwarntime;
+
+	pwwarntime = acwarntime = TWO_WEEKS;
+
+	pwtimeleft = auth_check_change(as);
+	actimeleft = auth_check_expire(as);
+#ifdef HAVE_LOGIN_CAP
+	if (authctxt->valid) {
+		pwwarntime = login_getcaptime(lc, "password-warn", TWO_WEEKS,
+		    TWO_WEEKS);
+		acwarntime = login_getcaptime(lc, "expire-warn", TWO_WEEKS,
+		    TWO_WEEKS);
+	}
+#endif
+	if (pwtimeleft != 0 && pwtimeleft < pwwarntime) {
+		daysleft = pwtimeleft / DAY + 1;
+		snprintf(buf, sizeof(buf),
+		    "Your password will expire in %lld day%s.\n",
+		    daysleft, daysleft == 1 ? "" : "s");
+		buffer_append(&loginmsg, buf, strlen(buf));
+	}
+	if (actimeleft != 0 && actimeleft < acwarntime) {
+		daysleft = actimeleft / DAY + 1;
+		snprintf(buf, sizeof(buf),
+		    "Your account will expire in %lld day%s.\n",
+		    daysleft, daysleft == 1 ? "" : "s");
+		buffer_append(&loginmsg, buf, strlen(buf));
+	}
+}
+
 int
 sys_auth_passwd(Authctxt *authctxt, const char *password)
 {
 	struct passwd *pw = authctxt->pw;
 	auth_session_t *as;
+	static int expire_checked = 0;
 
 	as = auth_usercheck(pw->pw_name, authctxt->style, "auth-ssh",
 	    (char *)password);
+	if (as == NULL)
+		return (0);
 	if (auth_getstate(as) & AUTH_PWEXPIRED) {
 		auth_close(as);
 		disable_forwarding();
 		authctxt->force_pwchange = 1;
 		return (1);
 	} else {
+		if (!expire_checked) {
+			expire_checked = 1;
+			warn_expiry(authctxt, as);
+		}
 		return (auth_close(as));
 	}
 }
@@ -144,6 +210,7 @@ sys_auth_passwd(Authctxt *authctxt, const char *password)
 	 * Authentication is accepted if the encrypted passwords
 	 * are identical.
 	 */
-	return (strcmp(encrypted_password, pw_password) == 0);
+	return encrypted_password != NULL &&
+	    strcmp(encrypted_password, pw_password) == 0;
 }
 #endif

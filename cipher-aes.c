@@ -23,17 +23,21 @@
  */
 
 #include "includes.h"
-#if OPENSSL_VERSION_NUMBER < 0x00907000L
-RCSID("$OpenBSD: cipher-aes.c,v 1.2 2003/11/26 21:44:29 djm Exp $");
+
+/* compatibility with old or broken OpenSSL versions */
+#include "openbsd-compat/openssl-compat.h"
+
+#ifdef USE_BUILTIN_RIJNDAEL
+#include <sys/types.h>
 
 #include <openssl/evp.h>
+
+#include <stdarg.h>
+#include <string.h>
+
 #include "rijndael.h"
 #include "xmalloc.h"
 #include "log.h"
-
-#if OPENSSL_VERSION_NUMBER < 0x00906000L
-#define SSH_OLD_EVP
-#endif
 
 #define RIJNDAEL_BLOCKSIZE 16
 struct ssh_rijndael_ctx
@@ -41,9 +45,6 @@ struct ssh_rijndael_ctx
 	rijndael_ctx	r_ctx;
 	u_char		r_iv[RIJNDAEL_BLOCKSIZE];
 };
-
-const EVP_CIPHER * evp_rijndael(void);
-void ssh_rijndael_iv(EVP_CIPHER_CTX *, int, u_char *, u_int);
 
 static int
 ssh_rijndael_init(EVP_CIPHER_CTX *ctx, const u_char *key, const u_char *iv,
@@ -68,7 +69,7 @@ ssh_rijndael_init(EVP_CIPHER_CTX *ctx, const u_char *key, const u_char *iv,
 
 static int
 ssh_rijndael_cbc(EVP_CIPHER_CTX *ctx, u_char *dest, const u_char *src,
-    u_int len)
+    LIBCRYPTO_EVP_INL_TYPE len)
 {
 	struct ssh_rijndael_ctx *c;
 	u_char buf[RIJNDAEL_BLOCKSIZE];
@@ -119,7 +120,7 @@ ssh_rijndael_cleanup(EVP_CIPHER_CTX *ctx)
 
 	if ((c = EVP_CIPHER_CTX_get_app_data(ctx)) != NULL) {
 		memset(c, 0, sizeof(*c));
-		xfree(c);
+		free(c);
 		EVP_CIPHER_CTX_set_app_data(ctx, NULL);
 	}
 	return (1);
@@ -157,4 +158,4 @@ evp_rijndael(void)
 #endif
 	return (&rijndal_cbc);
 }
-#endif /* OPENSSL_VERSION_NUMBER */
+#endif /* USE_BUILTIN_RIJNDAEL */

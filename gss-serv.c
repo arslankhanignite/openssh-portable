@@ -1,4 +1,4 @@
-/*	$OpenBSD: gss-serv.c,v 1.5 2003/11/17 11:06:07 markus Exp $	*/
+/* $OpenBSD: gss-serv.c,v 1.29 2015/05/22 03:50:02 djm Exp $ */
 
 /*
  * Copyright (c) 2001-2003 Simon Wilkinson. All rights reserved.
@@ -28,16 +28,23 @@
 
 #ifdef GSSAPI
 
-#include "bufaux.h"
-#include "compat.h"
+#include <sys/types.h>
+
+#include <stdarg.h>
+#include <string.h>
+#include <unistd.h>
+
+#include "openbsd-compat/sys-queue.h"
+#include "xmalloc.h"
+#include "buffer.h"
+#include "key.h"
+#include "hostfile.h"
 #include "auth.h"
 #include "log.h"
 #include "channels.h"
 #include "session.h"
+#include "misc.h"
 #include "servconf.h"
-#include "monitor_wrap.h"
-#include "xmalloc.h"
-#include "getput.h"
 
 #include "ssh-gss.h"
 
@@ -45,7 +52,7 @@ extern ServerOptions options;
 
 static ssh_gssapi_client gssapi_client =
     { GSS_C_EMPTY_BUFFER, GSS_C_EMPTY_BUFFER,
-    GSS_C_NO_CREDENTIAL, NULL, {NULL, NULL, NULL}};
+    GSS_C_NO_CREDENTIAL, NULL, {NULL, NULL, NULL, NULL}};
 
 ssh_gssapi_mech gssapi_null_mech =
     { NULL, NULL, {0, NULL}, NULL, NULL, NULL, NULL};
@@ -61,7 +68,80 @@ ssh_gssapi_mech* supported_mechs[]= {
 	&gssapi_null_mech,
 };
 
-/* Unpriviledged */
+/*
+ * ssh_gssapi_supported_oids() can cause sandbox violations, so prepare the
+ * list of supported mechanisms before privsep is set up.
+ */
+static gss_OID_set supported_oids;
+
+void
+ssh_gssapi_prepare_supported_oids(void)
+{
+	ssh_gssapi_supported_oids(&supported_oids);
+}
+
+OM_uint32
+ssh_gssapi_test_oid_supported(OM_uint32 *ms, gss_OID member, int *present)
+{
+	if (supported_oids == NULL)
+		ssh_gssapi_prepare_supported_oids();
+	return gss_test_oid_set_member(ms, member, supported_oids, present);
+}
+
+/*
+ * Acquire credentials for a server running on the current host.
+ * Requires that the context structure contains a valid OID
+ */
+
+/* Returns a GSSAPI error code */
+/* Privileged (called from ssh_gssapi_server_ctx) */
+static OM_uint32
+ssh_gssapi_acquire_cred(Gssctxt *ctx)
+{
+	OM_uint32 status;
+	char lname[NI_MAXHOST];
+	gss_OID_set oidset;
+
+	if (options.gss_strict_acceptor) {
+		gss_create_empty_oid_set(&status, &oidset);
+		gss_add_oid_set_member(&status, ctx->oid, &oidset);
+
+		if (gethostname(lname, MAXHOSTNAMELEN)) {
+			gss_release_oid_set(&status, &oidset);
+			return (-1);
+		}
+
+		if (GSS_ERROR(ssh_gssapi_import_name(ctx, lname))) {
+			gss_release_oid_set(&status, &oidset);
+			return (ctx->major);
+		}
+
+		if ((ctx->major = gss_acquire_cred(&ctx->minor,
+		    ctx->name, 0, oidset, GSS_C_ACCEPT, &ctx->creds,
+		    NULL, NULL)))
+			ssh_gssapi_error(ctx);
+
+		gss_release_oid_set(&status, &oidset);
+		return (ctx->major);
+	} else {
+		ctx->name = GSS_C_NO_NAME;
+		ctx->creds = GSS_C_NO_CREDENTIAL;
+	}
+	return GSS_S_COMPLETE;
+}
+
+/* Privileged */
+OM_uint32
+ssh_gssapi_server_ctx(Gssctxt **ctx, gss_OID oid)
+{
+	if (*ctx)
+		ssh_gssapi_delete_ctx(ctx);
+	ssh_gssapi_build_ctx(ctx);
+	ssh_gssapi_set_oid(*ctx, oid);
+	return (ssh_gssapi_acquire_cred(*ctx));
+}
+
+/* Unprivileged */
 void
 ssh_gssapi_supported_oids(gss_OID_set *oidset)
 {
@@ -82,6 +162,8 @@ ssh_gssapi_supported_oids(gss_OID_set *oidset)
 			    &supported_mechs[i]->oid, oidset);
 		i++;
 	}
+
+	gss_release_oid_set(&min_status, &supported);
 }
 
 
@@ -90,7 +172,7 @@ ssh_gssapi_supported_oids(gss_OID_set *oidset)
  *    oid
  *    credentials	(from ssh_gssapi_acquire_cred)
  */
-/* Priviledged */
+/* Privileged */
 OM_uint32
 ssh_gssapi_accept_ctx(Gssctxt *ctx, gss_buffer_desc *recv_tok,
     gss_buffer_desc *send_tok, OM_uint32 *flags)
@@ -134,18 +216,18 @@ ssh_gssapi_accept_ctx(Gssctxt *ctx, gss_buffer_desc *recv_tok,
 static OM_uint32
 ssh_gssapi_parse_ename(Gssctxt *ctx, gss_buffer_t ename, gss_buffer_t name)
 {
-	char *tok;
+	u_char *tok;
 	OM_uint32 offset;
 	OM_uint32 oidl;
 
-	tok=ename->value;
+	tok = ename->value;
 
 	/*
 	 * Check that ename is long enough for all of the fixed length
 	 * header, and that the initial ID bytes are correct
 	 */
 
-	if (ename->length<6 || memcmp(tok,"\x04\x01", 2)!=0)
+	if (ename->length < 6 || memcmp(tok, "\x04\x01", 2) != 0)
 		return GSS_S_FAILURE;
 
 	/*
@@ -155,7 +237,7 @@ ssh_gssapi_parse_ename(Gssctxt *ctx, gss_buffer_t ename, gss_buffer_t name)
 	 * second without.
 	 */
 
-	oidl = GET_16BIT(tok+2); /* length including next two bytes */
+	oidl = get_u16(tok+2); /* length including next two bytes */
 	oidl = oidl-2; /* turn it into the _real_ length of the variable OID */
 
 	/*
@@ -164,7 +246,7 @@ ssh_gssapi_parse_ename(Gssctxt *ctx, gss_buffer_t ename, gss_buffer_t name)
 	 */
 	if (tok[4] != 0x06 || tok[5] != oidl ||
 	    ename->length < oidl+6 ||
-	   !ssh_gssapi_check_oid(ctx,tok+6,oidl))
+	    !ssh_gssapi_check_oid(ctx, tok+6, oidl))
 		return GSS_S_FAILURE;
 
 	offset = oidl+6;
@@ -172,14 +254,16 @@ ssh_gssapi_parse_ename(Gssctxt *ctx, gss_buffer_t ename, gss_buffer_t name)
 	if (ename->length < offset+4)
 		return GSS_S_FAILURE;
 
-	name->length = GET_32BIT(tok+offset);
+	name->length = get_u32(tok+offset);
 	offset += 4;
 
+	if (UINT_MAX - offset < name->length)
+		return GSS_S_FAILURE;
 	if (ename->length < offset+name->length)
 		return GSS_S_FAILURE;
 
 	name->value = xmalloc(name->length+1);
-	memcpy(name->value,tok+offset,name->length);
+	memcpy(name->value, tok+offset, name->length);
 	((char *)name->value)[name->length] = 0;
 
 	return GSS_S_COMPLETE;
@@ -188,7 +272,7 @@ ssh_gssapi_parse_ename(Gssctxt *ctx, gss_buffer_t ename, gss_buffer_t name)
 /* Extract the client details from a given context. This can only reliably
  * be called once for a context */
 
-/* Priviledged (called from accept_secure_ctx) */
+/* Privileged (called from accept_secure_ctx) */
 OM_uint32
 ssh_gssapi_getclient(Gssctxt *ctx, ssh_gssapi_client *client)
 {
@@ -238,7 +322,8 @@ ssh_gssapi_cleanup_creds(void)
 {
 	if (gssapi_client.store.filename != NULL) {
 		/* Unlink probably isn't sufficient */
-		debug("removing gssapi cred file\"%s\"", gssapi_client.store.filename);
+		debug("removing gssapi cred file\"%s\"",
+		    gssapi_client.store.filename);
 		unlink(gssapi_client.store.filename);
 	}
 }
@@ -263,31 +348,42 @@ ssh_gssapi_do_child(char ***envp, u_int *envsizep)
 
 	if (gssapi_client.store.envvar != NULL &&
 	    gssapi_client.store.envval != NULL) {
-
 		debug("Setting %s to %s", gssapi_client.store.envvar,
-		gssapi_client.store.envval);
+		    gssapi_client.store.envval);
 		child_set_env(envp, envsizep, gssapi_client.store.envvar,
-		     gssapi_client.store.envval);
+		    gssapi_client.store.envval);
 	}
 }
 
-/* Priviledged */
+/* Privileged */
 int
 ssh_gssapi_userok(char *user)
 {
+	OM_uint32 lmin;
+
 	if (gssapi_client.exportedname.length == 0 ||
 	    gssapi_client.exportedname.value == NULL) {
 		debug("No suitable client data");
 		return 0;
 	}
 	if (gssapi_client.mech && gssapi_client.mech->userok)
-		return ((*gssapi_client.mech->userok)(&gssapi_client, user));
+		if ((*gssapi_client.mech->userok)(&gssapi_client, user))
+			return 1;
+		else {
+			/* Destroy delegated credentials if userok fails */
+			gss_release_buffer(&lmin, &gssapi_client.displayname);
+			gss_release_buffer(&lmin, &gssapi_client.exportedname);
+			gss_release_cred(&lmin, &gssapi_client.creds);
+			explicit_bzero(&gssapi_client,
+			    sizeof(ssh_gssapi_client));
+			return 0;
+		}
 	else
 		debug("ssh_gssapi_userok: Unknown GSSAPI mechanism");
 	return (0);
 }
 
-/* Priviledged */
+/* Privileged */
 OM_uint32
 ssh_gssapi_checkmic(Gssctxt *ctx, gss_buffer_t gssbuf, gss_buffer_t gssmic)
 {

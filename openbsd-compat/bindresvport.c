@@ -1,6 +1,6 @@
 /* This file has be substantially modified from the original OpenBSD source */
 
-/*	$OpenBSD: bindresvport.c,v 1.15 2003/05/20 22:42:35 deraadt Exp $	*/
+/*	$OpenBSD: bindresvport.c,v 1.17 2005/12/21 01:40:22 millert Exp $	*/
 
 /*
  * Copyright 1996, Jason Downs.  All rights reserved.
@@ -28,11 +28,19 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+/* OPENBSD ORIGINAL: lib/libc/rpc/bindresvport.c */
+
 #include "includes.h"
 
 #ifndef HAVE_BINDRESVPORT_SA
+#include <sys/types.h>
+#include <sys/socket.h>
 
-#include "includes.h"
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+#include <errno.h>
+#include <string.h>
 
 #define STARTPORT 600
 #define ENDPORT (IPPORT_RESERVED - 1)
@@ -42,14 +50,12 @@
  * Bind a socket to a privileged IP port
  */
 int
-bindresvport_sa(sd, sa)
-	int sd;
-	struct sockaddr *sa;
+bindresvport_sa(int sd, struct sockaddr *sa)
 {
 	int error, af;
 	struct sockaddr_storage myaddr;
-	struct sockaddr_in *sin;
-	struct sockaddr_in6 *sin6;
+	struct sockaddr_in *in;
+	struct sockaddr_in6 *in6;
 	u_int16_t *portp;
 	u_int16_t port;
 	socklen_t salen;
@@ -68,13 +74,13 @@ bindresvport_sa(sd, sa)
 		af = sa->sa_family;
 
 	if (af == AF_INET) {
-		sin = (struct sockaddr_in *)sa;
+		in = (struct sockaddr_in *)sa;
 		salen = sizeof(struct sockaddr_in);
-		portp = &sin->sin_port;
+		portp = &in->sin_port;
 	} else if (af == AF_INET6) {
-		sin6 = (struct sockaddr_in6 *)sa;
+		in6 = (struct sockaddr_in6 *)sa;
 		salen = sizeof(struct sockaddr_in6);
-		portp = &sin6->sin6_port;
+		portp = &in6->sin6_port;
 	} else {
 		errno = EPFNOSUPPORT;
 		return (-1);
@@ -83,7 +89,7 @@ bindresvport_sa(sd, sa)
 
 	port = ntohs(*portp);
 	if (port == 0)
-		port = (arc4random() % NPORTS) + STARTPORT;
+		port = arc4random_uniform(NPORTS) + STARTPORT;
 
 	/* Avoid warning */
 	error = -1;

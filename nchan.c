@@ -1,3 +1,4 @@
+/* $OpenBSD: nchan.c,v 1.63 2010/01/26 01:28:35 djm Exp $ */
 /*
  * Copyright (c) 1999, 2000, 2001, 2002 Markus Friedl.  All rights reserved.
  *
@@ -23,8 +24,15 @@
  */
 
 #include "includes.h"
-RCSID("$OpenBSD: nchan.c,v 1.49 2003/08/29 10:04:36 markus Exp $");
 
+#include <sys/types.h>
+#include <sys/socket.h>
+
+#include <errno.h>
+#include <string.h>
+#include <stdarg.h>
+
+#include "openbsd-compat/sys-queue.h"
 #include "ssh1.h"
 #include "ssh2.h"
 #include "buffer.h"
@@ -42,15 +50,15 @@ RCSID("$OpenBSD: nchan.c,v 1.49 2003/08/29 10:04:36 markus Exp $");
  * tear down of channels:
  *
  * 1.3:	strict request-ack-protocol:
- * 	CLOSE	->
- * 		<-  CLOSE_CONFIRM
+ *	CLOSE	->
+ *		<-  CLOSE_CONFIRM
  *
  * 1.5:	uses variations of:
- * 	IEOF	->
- * 		<-  OCLOSE
- * 		<-  IEOF
- * 	OCLOSE	->
- * 	i.e. both sides have to close the channel
+ *	IEOF	->
+ *		<-  OCLOSE
+ *		<-  IEOF
+ *	OCLOSE	->
+ *	i.e. both sides have to close the channel
  *
  * 2.0: the EOF messages are optional
  *
@@ -70,6 +78,7 @@ static void	chan_send_ieof1(Channel *);
 static void	chan_send_oclose1(Channel *);
 static void	chan_send_close2(Channel *);
 static void	chan_send_eof2(Channel *);
+static void	chan_send_eow2(Channel *);
 
 /* helper */
 static void	chan_shutdown_write(Channel *);
@@ -152,7 +161,7 @@ chan_ibuf_empty(Channel *c)
 	switch (c->istate) {
 	case CHAN_INPUT_WAIT_DRAIN:
 		if (compat20) {
-			if (!(c->flags & CHAN_CLOSE_SENT))
+			if (!(c->flags & (CHAN_CLOSE_SENT|CHAN_LOCAL)))
 				chan_send_eof2(c);
 			chan_set_istate(c, CHAN_INPUT_CLOSED);
 		} else {
@@ -269,9 +278,12 @@ static void
 chan_rcvd_close2(Channel *c)
 {
 	debug2("channel %d: rcvd close", c->self);
-	if (c->flags & CHAN_CLOSE_RCVD)
-		error("channel %d: protocol error: close rcvd twice", c->self);
-	c->flags |= CHAN_CLOSE_RCVD;
+	if (!(c->flags & CHAN_LOCAL)) {
+		if (c->flags & CHAN_CLOSE_RCVD)
+			error("channel %d: protocol error: close rcvd twice",
+			    c->self);
+		c->flags |= CHAN_CLOSE_RCVD;
+	}
 	if (c->type == SSH_CHANNEL_LARVAL) {
 		/* tear down larval channels immediately */
 		chan_set_ostate(c, CHAN_OUTPUT_CLOSED);
@@ -293,7 +305,20 @@ chan_rcvd_close2(Channel *c)
 		chan_set_istate(c, CHAN_INPUT_CLOSED);
 		break;
 	case CHAN_INPUT_WAIT_DRAIN:
-		chan_send_eof2(c);
+		if (!(c->flags & CHAN_LOCAL))
+			chan_send_eof2(c);
+		chan_set_istate(c, CHAN_INPUT_CLOSED);
+		break;
+	}
+}
+
+void
+chan_rcvd_eow(Channel *c)
+{
+	debug2("channel %d: rcvd eow", c->self);
+	switch (c->istate) {
+	case CHAN_INPUT_OPEN:
+		chan_shutdown_read(c);
 		chan_set_istate(c, CHAN_INPUT_CLOSED);
 		break;
 	}
@@ -314,6 +339,8 @@ chan_write_failed2(Channel *c)
 	case CHAN_OUTPUT_OPEN:
 	case CHAN_OUTPUT_WAIT_DRAIN:
 		chan_shutdown_write(c);
+		if (strcmp(c->ctype, "session") == 0)
+			chan_send_eow2(c);
 		chan_set_ostate(c, CHAN_OUTPUT_CLOSED);
 		break;
 	default:
@@ -356,6 +383,23 @@ chan_send_close2(Channel *c)
 		c->flags |= CHAN_CLOSE_SENT;
 	}
 }
+static void
+chan_send_eow2(Channel *c)
+{
+	debug2("channel %d: send eow", c->self);
+	if (c->ostate == CHAN_OUTPUT_CLOSED) {
+		error("channel %d: must not sent eow on closed output",
+		    c->self);
+		return;
+	}
+	if (!(datafellows & SSH_NEW_OPENSSH))
+		return;
+	packet_start(SSH2_MSG_CHANNEL_REQUEST);
+	packet_put_int(c->remote_id);
+	packet_put_cstring("eow@openssh.com");
+	packet_put_char(0);
+	packet_send();
+}
 
 /* shared */
 
@@ -395,7 +439,7 @@ chan_mark_dead(Channel *c)
 }
 
 int
-chan_is_dead(Channel *c, int send)
+chan_is_dead(Channel *c, int do_send)
 {
 	if (c->type == SSH_CHANNEL_ZOMBIE) {
 		debug2("channel %d: zombie", c->self);
@@ -415,8 +459,12 @@ chan_is_dead(Channel *c, int send)
 		    c->self, c->efd, buffer_len(&c->extended));
 		return 0;
 	}
+	if (c->flags & CHAN_LOCAL) {
+		debug2("channel %d: is dead (local)", c->self);
+		return 1;
+	}		
 	if (!(c->flags & CHAN_CLOSE_SENT)) {
-		if (send) {
+		if (do_send) {
 			chan_send_close2(c);
 		} else {
 			/* channel would be dead if we sent a close */
@@ -447,12 +495,12 @@ chan_shutdown_write(Channel *c)
 	if (c->sock != -1) {
 		if (shutdown(c->sock, SHUT_WR) < 0)
 			debug2("channel %d: chan_shutdown_write: "
-			    "shutdown() failed for fd%d: %.100s",
+			    "shutdown() failed for fd %d: %.100s",
 			    c->self, c->sock, strerror(errno));
 	} else {
 		if (channel_close_fd(&c->wfd) < 0)
 			logit("channel %d: chan_shutdown_write: "
-			    "close() failed for fd%d: %.100s",
+			    "close() failed for fd %d: %.100s",
 			    c->self, c->wfd, strerror(errno));
 	}
 }
@@ -471,13 +519,13 @@ chan_shutdown_read(Channel *c)
 		if (shutdown(c->sock, SHUT_RD) < 0
 		    && errno != ENOTCONN)
 			error("channel %d: chan_shutdown_read: "
-			    "shutdown() failed for fd%d [i%d o%d]: %.100s",
+			    "shutdown() failed for fd %d [i%d o%d]: %.100s",
 			    c->self, c->sock, c->istate, c->ostate,
 			    strerror(errno));
 	} else {
 		if (channel_close_fd(&c->rfd) < 0)
 			logit("channel %d: chan_shutdown_read: "
-			    "close() failed for fd%d: %.100s",
+			    "close() failed for fd %d: %.100s",
 			    c->self, c->rfd, strerror(errno));
 	}
 }

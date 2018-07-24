@@ -1,4 +1,4 @@
-/*	$OpenBSD: monitor_mm.h,v 1.2 2002/03/26 03:24:01 stevesk Exp $	*/
+/* $OpenBSD: monitor_mm.h,v 1.6 2014/01/04 17:50:55 tedu Exp $ */
 
 /*
  * Copyright 2002 Niels Provos <provos@citi.umich.edu>
@@ -27,7 +27,6 @@
 
 #ifndef _MM_H_
 #define _MM_H_
-#include "openbsd-compat/sys-tree.h"
 
 struct mm_share {
 	RB_ENTRY(mm_share) next;
@@ -42,16 +41,13 @@ struct mm_master {
 	size_t size;
 
 	struct mm_master *mmalloc;	/* Used to completely share */
-
-	int write;		/* used to writing to other party */
-	int read;		/* used for reading from other party */
 };
 
 RB_PROTOTYPE(mmtree, mm_share, next, mm_compare)
 
 #define MM_MINSIZE		128
 
-#define MM_ADDRESS_END(x)	(void *)((u_char *)(x)->address + (x)->size)
+#define MM_ADDRESS_END(x)	(void *)((char *)(x)->address + (x)->size)
 
 struct mm_master *mm_create(struct mm_master *, size_t);
 void mm_destroy(struct mm_master *);

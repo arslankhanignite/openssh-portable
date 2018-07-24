@@ -1,4 +1,4 @@
-/*	$OpenBSD: sftp-common.h,v 1.5 2003/11/10 16:23:41 jakob Exp $	*/
+/* $OpenBSD: sftp-common.h,v 1.12 2015/01/14 13:54:13 djm Exp $ */
 
 /*
  * Copyright (c) 2001 Markus Friedl.  All rights reserved.
@@ -25,6 +25,10 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+/* Maximum packet that we are willing to send/accept */
+#define SFTP_MAX_MSG_LENGTH	(256 * 1024)
+
+struct sshbuf;
 typedef struct Attrib Attrib;
 
 /* File attributes */
@@ -41,8 +45,8 @@ struct Attrib {
 void	 attrib_clear(Attrib *);
 void	 stat_to_attrib(const struct stat *, Attrib *);
 void	 attrib_to_stat(const Attrib *, struct stat *);
-Attrib	*decode_attrib(Buffer *);
-void	 encode_attrib(Buffer *, const Attrib *);
-char	*ls_file(const char *, const struct stat *, int);
+int	 decode_attrib(struct sshbuf *, Attrib *);
+int	 encode_attrib(struct sshbuf *, const Attrib *);
+char	*ls_file(const char *, const struct stat *, int, int);
 
 const char *fx2txt(int);

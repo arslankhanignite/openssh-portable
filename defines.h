@@ -25,12 +25,12 @@
 #ifndef _DEFINES_H
 #define _DEFINES_H
 
-/* $Id: defines.h,v 1.115 2004/04/14 07:24:30 dtucker Exp $ */
+/* $Id: defines.h,v 1.183 2014/09/02 19:33:26 djm Exp $ */
 
 
 /* Constants */
 
-#ifndef SHUT_RDWR
+#if defined(HAVE_DECL_SHUT_RD) && HAVE_DECL_SHUT_RD == 0
 enum
 {
   SHUT_RD = 0,		/* No more receptions.  */
@@ -42,6 +42,11 @@ enum
 # define SHUT_RDWR SHUT_RDWR
 #endif
 
+/*
+ * Definitions for IP type of service (ip_tos)
+ */
+#include <netinet/in_systm.h>
+#include <netinet/ip.h>
 #ifndef IPTOS_LOWDELAY
 # define IPTOS_LOWDELAY          0x10
 # define IPTOS_THROUGHPUT        0x08
@@ -50,13 +55,70 @@ enum
 # define IPTOS_MINCOST           IPTOS_LOWCOST
 #endif /* IPTOS_LOWDELAY */
 
+/*
+ * Definitions for DiffServ Codepoints as per RFC2474
+ */
+#ifndef IPTOS_DSCP_AF11
+# define	IPTOS_DSCP_AF11		0x28
+# define	IPTOS_DSCP_AF12		0x30
+# define	IPTOS_DSCP_AF13		0x38
+# define	IPTOS_DSCP_AF21		0x48
+# define	IPTOS_DSCP_AF22		0x50
+# define	IPTOS_DSCP_AF23		0x58
+# define	IPTOS_DSCP_AF31		0x68
+# define	IPTOS_DSCP_AF32		0x70
+# define	IPTOS_DSCP_AF33		0x78
+# define	IPTOS_DSCP_AF41		0x88
+# define	IPTOS_DSCP_AF42		0x90
+# define	IPTOS_DSCP_AF43		0x98
+# define	IPTOS_DSCP_EF		0xb8
+#endif /* IPTOS_DSCP_AF11 */
+#ifndef IPTOS_DSCP_CS0
+# define	IPTOS_DSCP_CS0		0x00
+# define	IPTOS_DSCP_CS1		0x20
+# define	IPTOS_DSCP_CS2		0x40
+# define	IPTOS_DSCP_CS3		0x60
+# define	IPTOS_DSCP_CS4		0x80
+# define	IPTOS_DSCP_CS5		0xa0
+# define	IPTOS_DSCP_CS6		0xc0
+# define	IPTOS_DSCP_CS7		0xe0
+#endif /* IPTOS_DSCP_CS0 */
+#ifndef IPTOS_DSCP_EF
+# define	IPTOS_DSCP_EF		0xb8
+#endif /* IPTOS_DSCP_EF */
+
+#ifndef PATH_MAX
+# ifdef _POSIX_PATH_MAX
+# define PATH_MAX _POSIX_PATH_MAX
+# endif
+#endif
+
 #ifndef MAXPATHLEN
 # ifdef PATH_MAX
 #  define MAXPATHLEN PATH_MAX
 # else /* PATH_MAX */
-#  define MAXPATHLEN 64 /* Should be safe */
+#  define MAXPATHLEN 64
+/* realpath uses a fixed buffer of size MAXPATHLEN, so force use of ours */
+#  ifndef BROKEN_REALPATH
+#   define BROKEN_REALPATH 1
+#  endif /* BROKEN_REALPATH */
 # endif /* PATH_MAX */
 #endif /* MAXPATHLEN */
+
+#ifndef HOST_NAME_MAX
+# include "netdb.h" /* for MAXHOSTNAMELEN */
+# if defined(_POSIX_HOST_NAME_MAX)
+#  define HOST_NAME_MAX _POSIX_HOST_NAME_MAX
+# elif defined(MAXHOSTNAMELEN)
+#  define HOST_NAME_MAX MAXHOSTNAMELEN
+# else
+#  define HOST_NAME_MAX	255
+# endif
+#endif /* HOST_NAME_MAX */
+
+#if defined(HAVE_DECL_MAXSYMLINKS) && HAVE_DECL_MAXSYMLINKS == 0
+# define MAXSYMLINKS 5
+#endif
 
 #ifndef STDIN_FILENO
 # define STDIN_FILENO    0
@@ -76,9 +138,13 @@ enum
 #endif
 #endif
 
-#ifndef O_NONBLOCK	/* Non Blocking Open */
-# define O_NONBLOCK      00004
+#if defined(HAVE_DECL_O_NONBLOCK) && HAVE_DECL_O_NONBLOCK == 0
+# define O_NONBLOCK      00004	/* Non Blocking Open */
 #endif
+
+#ifndef S_IFSOCK
+# define S_IFSOCK 0
+#endif /* S_IFSOCK */
 
 #ifndef S_ISDIR
 # define S_ISDIR(mode)	(((mode) & (_S_IFMT)) == (_S_IFDIR))
@@ -116,11 +182,6 @@ enum
 # define MAP_FAILED ((void *)-1)
 #endif
 
-/* *-*-nto-qnx doesn't define this constant in the system headers */
-#ifdef MISSING_NFDBITS
-# define	NFDBITS (8 * sizeof(unsigned long))
-#endif
-
 /*
 SCO Open Server 3 has INADDR_LOOPBACK defined in rpc/rpc.h but
 including rpc/rpc.h breaks Solaris 6
@@ -129,26 +190,17 @@ including rpc/rpc.h breaks Solaris 6
 #define INADDR_LOOPBACK ((u_long)0x7f000001)
 #endif
 
-#ifndef __unused
-#define __unused
-#endif
-
 /* Types */
 
 /* If sys/types.h does not supply intXX_t, supply them ourselves */
 /* (or die trying) */
-
 
 #ifndef HAVE_U_INT
 typedef unsigned int u_int;
 #endif
 
 #ifndef HAVE_INTXX_T
-# if (SIZEOF_CHAR == 1)
-typedef char int8_t;
-# else
-#  error "8 bit int type not found."
-# endif
+typedef signed char int8_t;
 # if (SIZEOF_SHORT_INT == 2)
 typedef short int int16_t;
 # else
@@ -181,11 +233,7 @@ typedef uint16_t u_int16_t;
 typedef uint32_t u_int32_t;
 # define HAVE_U_INTXX_T 1
 # else
-#  if (SIZEOF_CHAR == 1)
 typedef unsigned char u_int8_t;
-#  else
-#   error "8 bit int type not found."
-#  endif
 #  if (SIZEOF_SHORT_INT == 2)
 typedef unsigned short int u_int16_t;
 #  else
@@ -232,10 +280,29 @@ typedef unsigned long long int u_int64_t;
 # endif
 #endif
 
+#ifndef HAVE_UINTXX_T
+typedef u_int8_t uint8_t;
+typedef u_int16_t uint16_t;
+typedef u_int32_t uint32_t;
+typedef u_int64_t uint64_t;
+#endif
+
+#ifndef HAVE_INTMAX_T
+typedef long long intmax_t;
+#endif
+
+#ifndef HAVE_UINTMAX_T
+typedef unsigned long long uintmax_t;
+#endif
+
 #ifndef HAVE_U_CHAR
 typedef unsigned char u_char;
 # define HAVE_U_CHAR
 #endif /* HAVE_U_CHAR */
+
+#ifndef ULLONG_MAX
+# define ULLONG_MAX ((unsigned long long)-1)
+#endif
 
 #ifndef SIZE_T_MAX
 #define SIZE_T_MAX ULONG_MAX
@@ -246,6 +313,10 @@ typedef unsigned int size_t;
 # define HAVE_SIZE_T
 # define SIZE_T_MAX UINT_MAX
 #endif /* HAVE_SIZE_T */
+
+#ifndef SIZE_MAX
+#define SIZE_MAX SIZE_T_MAX
+#endif
 
 #ifndef HAVE_SSIZE_T
 typedef int ssize_t;
@@ -288,6 +359,13 @@ struct	sockaddr_un {
 };
 #endif /* HAVE_SYS_UN_H */
 
+#ifndef HAVE_IN_ADDR_T
+typedef u_int32_t	in_addr_t;
+#endif
+#ifndef HAVE_IN_PORT_T
+typedef u_int16_t	in_port_t;
+#endif
+
 #if defined(BROKEN_SYS_TERMIO_H) && !defined(_STRUCT_WINSIZE)
 #define _STRUCT_WINSIZE
 struct winsize {
@@ -298,21 +376,23 @@ struct winsize {
 };
 #endif
 
-/* *-*-nto-qnx does not define this type in the system headers */
-#ifdef MISSING_FD_MASK
+/* bits needed for select that may not be in the system headers */
+#ifndef HAVE_FD_MASK
  typedef unsigned long int	fd_mask;
+#endif
+
+#if defined(HAVE_DECL_NFDBITS) && HAVE_DECL_NFDBITS == 0
+# define	NFDBITS (8 * sizeof(unsigned long))
+#endif
+
+#if defined(HAVE_DECL_HOWMANY) && HAVE_DECL_HOWMANY == 0
+# define howmany(x,y)	(((x)+((y)-1))/(y))
 #endif
 
 /* Paths */
 
 #ifndef _PATH_BSHELL
 # define _PATH_BSHELL "/bin/sh"
-#endif
-#ifndef _PATH_CSHELL
-# define _PATH_CSHELL "/bin/csh"
-#endif
-#ifndef _PATH_SHELLS
-# define _PATH_SHELLS "/etc/shells"
 #endif
 
 #ifdef USER_PATH
@@ -334,17 +414,14 @@ struct winsize {
 # define _PATH_DEVNULL "/dev/null"
 #endif
 
-#ifndef MAIL_DIRECTORY
-# define MAIL_DIRECTORY "/var/spool/mail"
-#endif
+/* user may have set a different path */
+#if defined(_PATH_MAILDIR) && defined(MAIL_DIRECTORY)
+# undef _PATH_MAILDIR
+#endif /* defined(_PATH_MAILDIR) && defined(MAIL_DIRECTORY) */
 
-#ifndef MAILDIR
-# define MAILDIR MAIL_DIRECTORY
+#ifdef MAIL_DIRECTORY
+# define _PATH_MAILDIR MAIL_DIRECTORY
 #endif
-
-#if !defined(_PATH_MAILDIR) && defined(MAILDIR)
-# define _PATH_MAILDIR MAILDIR
-#endif /* !defined(_PATH_MAILDIR) && defined(MAILDIR) */
 
 #ifndef _PATH_NOLOGIN
 # define _PATH_NOLOGIN "/etc/nologin"
@@ -424,9 +501,16 @@ struct winsize {
 # define __attribute__(x)
 #endif /* !defined(__GNUC__) || (__GNUC__ < 2) */
 
-/* *-*-nto-qnx doesn't define this macro in the system headers */
-#ifdef MISSING_HOWMANY
-# define howmany(x,y)	(((x)+((y)-1))/(y))
+#if !defined(HAVE_ATTRIBUTE__SENTINEL__) && !defined(__sentinel__)
+# define __sentinel__
+#endif
+
+#if !defined(HAVE_ATTRIBUTE__BOUNDED__) && !defined(__bounded__)
+# define __bounded__(x, y, z)
+#endif
+
+#if !defined(HAVE_ATTRIBUTE__NONNULL__) && !defined(__nonnull__)
+# define __nonnull__(x)
 #endif
 
 #ifndef OSSH_ALIGNBYTES
@@ -462,6 +546,25 @@ struct winsize {
 	 (struct cmsghdr *)NULL)
 #endif /* CMSG_FIRSTHDR */
 
+#if defined(HAVE_DECL_OFFSETOF) && HAVE_DECL_OFFSETOF == 0
+# define offsetof(type, member) ((size_t) &((type *)0)->member)
+#endif
+
+/* Set up BSD-style BYTE_ORDER definition if it isn't there already */
+/* XXX: doesn't try to cope with strange byte orders (PDP_ENDIAN) */
+#ifndef BYTE_ORDER
+# ifndef LITTLE_ENDIAN
+#  define LITTLE_ENDIAN  1234
+# endif /* LITTLE_ENDIAN */
+# ifndef BIG_ENDIAN
+#  define BIG_ENDIAN     4321
+# endif /* BIG_ENDIAN */
+# ifdef WORDS_BIGENDIAN
+#  define BYTE_ORDER BIG_ENDIAN
+# else /* WORDS_BIGENDIAN */
+#  define BYTE_ORDER LITTLE_ENDIAN
+# endif /* WORDS_BIGENDIAN */
+#endif /* BYTE_ORDER */
 
 /* Function replacement / compatibility hacks */
 
@@ -484,19 +587,6 @@ struct winsize {
 # define optarg             BSDoptarg
 #endif
 
-/* In older versions of libpam, pam_strerror takes a single argument */
-#ifdef HAVE_OLD_PAM
-# define PAM_STRERROR(a,b) pam_strerror((b))
-#else
-# define PAM_STRERROR(a,b) pam_strerror((a),(b))
-#endif
-
-#ifdef PAM_SUN_CODEBASE
-# define PAM_MSG_MEMBER(msg, n, member) ((*(msg))[(n)].member)
-#else
-# define PAM_MSG_MEMBER(msg, n, member) ((msg)[(n)]->member)
-#endif
-
 #if defined(BROKEN_GETADDRINFO) && defined(HAVE_GETADDRINFO)
 # undef HAVE_GETADDRINFO
 #endif
@@ -507,25 +597,42 @@ struct winsize {
 # undef HAVE_GAI_STRERROR
 #endif
 
+#if defined(HAVE_GETADDRINFO)
+# if defined(HAVE_DECL_AI_NUMERICSERV) && HAVE_DECL_AI_NUMERICSERV == 0
+#   define AI_NUMERICSERV	0
+# endif
+#endif
+
 #if defined(BROKEN_UPDWTMPX) && defined(HAVE_UPDWTMPX)
 # undef HAVE_UPDWTMPX
+#endif
+
+#if defined(BROKEN_SHADOW_EXPIRE) && defined(HAS_SHADOW_EXPIRE)
+# undef HAS_SHADOW_EXPIRE
+#endif
+
+#if defined(HAVE_OPENLOG_R) && defined(SYSLOG_DATA_INIT) && \
+    defined(SYSLOG_R_SAFE_IN_SIGHAND)
+# define DO_LOG_SAFE_IN_SIGHAND
 #endif
 
 #if !defined(HAVE_MEMMOVE) && defined(HAVE_BCOPY)
 # define memmove(s1, s2, n) bcopy((s2), (s1), (n))
 #endif /* !defined(HAVE_MEMMOVE) && defined(HAVE_BCOPY) */
 
-#if defined(HAVE_VHANGUP) && !defined(HAVE_DEV_PTMX)
-#  define USE_VHANGUP
-#endif /* defined(HAVE_VHANGUP) && !defined(HAVE_DEV_PTMX) */
-
 #ifndef GETPGRP_VOID
+# include <unistd.h>
 # define getpgrp() getpgrp(0)
 #endif
 
-/* OPENSSL_free() is Free() in versions before OpenSSL 0.9.6 */
-#if !defined(OPENSSL_VERSION_NUMBER) || (OPENSSL_VERSION_NUMBER < 0x0090600f)
-# define OPENSSL_free(x) Free(x)
+#ifdef USE_BSM_AUDIT
+# define SSH_AUDIT_EVENTS
+# define CUSTOM_SSH_AUDIT_EVENTS
+#endif
+
+#ifdef USE_LINUX_AUDIT
+# define SSH_AUDIT_EVENTS
+# define CUSTOM_SSH_AUDIT_EVENTS
 #endif
 
 #if !defined(HAVE___func__) && defined(HAVE___FUNCTION__)
@@ -551,6 +658,36 @@ struct winsize {
 # define SSH_SYSFDMAX 10000
 #endif
 
+#ifdef FSID_HAS_VAL
+/* encode f_fsid into a 64 bit value  */
+#define FSID_TO_ULONG(f) \
+	((((u_int64_t)(f).val[0] & 0xffffffffUL) << 32) | \
+	    ((f).val[1] & 0xffffffffUL))
+#elif defined(FSID_HAS___VAL)
+#define FSID_TO_ULONG(f) \
+	((((u_int64_t)(f).__val[0] & 0xffffffffUL) << 32) | \
+	    ((f).__val[1] & 0xffffffffUL))
+#else
+# define FSID_TO_ULONG(f) ((f))
+#endif
+
+#if defined(__Lynx__)
+ /*
+  * LynxOS defines these in param.h which we do not want to include since
+  * it will also pull in a bunch of kernel definitions.
+  */
+# define ALIGNBYTES (sizeof(int) - 1)
+# define ALIGN(p) (((unsigned)p + ALIGNBYTES) & ~ALIGNBYTES)
+  /* Missing prototypes on LynxOS */
+  int snprintf (char *, size_t, const char *, ...);
+  int mkstemp (char *);
+  char *crypt (const char *, const char *);
+  int seteuid (uid_t);
+  int setegid (gid_t);
+  char *mkdtemp (char *);
+  int rresvport_af (int *, sa_family_t);
+  int innetgr (const char *, const char *, const char *, const char *);
+#endif
 
 /*
  * Define this to use pipes instead of socketpairs for communicating with the
@@ -606,7 +743,7 @@ struct winsize {
 #else
 /* Simply select your favourite login types. */
 /* Can't do if-else because some systems use several... <sigh> */
-#  if defined(UTMPX_FILE) && !defined(DISABLE_UTMPX)
+#  if !defined(DISABLE_UTMPX)
 #    define USE_UTMPX
 #  endif
 #  if defined(UTMP_FILE) && !defined(DISABLE_UTMP)
@@ -637,6 +774,80 @@ struct winsize {
 # define CUSTOM_SYS_AUTH_PASSWD 1
 #endif
 
+#if defined(HAVE_LIBIAF) && defined(HAVE_SET_ID) && !defined(HAVE_SECUREWARE)
+# define CUSTOM_SYS_AUTH_PASSWD 1
+#endif
+#if defined(HAVE_LIBIAF) && defined(HAVE_SET_ID) && !defined(BROKEN_LIBIAF)
+# define USE_LIBIAF
+#endif
+
+/* HP-UX 11.11 */
+#ifdef BTMP_FILE
+# define _PATH_BTMP BTMP_FILE
+#endif
+
+#if defined(USE_BTMP) && defined(_PATH_BTMP)
+# define CUSTOM_FAILED_LOGIN
+#endif
+
 /** end of login recorder definitions */
+
+#ifdef BROKEN_GETGROUPS
+# define getgroups(a,b) ((a)==0 && (b)==NULL ? NGROUPS_MAX : getgroups((a),(b)))
+#endif
+
+#if defined(HAVE_MMAP) && defined(BROKEN_MMAP)
+# undef HAVE_MMAP
+#endif
+
+#ifndef IOV_MAX
+# if defined(_XOPEN_IOV_MAX)
+#  define	IOV_MAX		_XOPEN_IOV_MAX
+# elif defined(DEF_IOV_MAX)
+#  define	IOV_MAX		DEF_IOV_MAX
+# else
+#  define	IOV_MAX		16
+# endif
+#endif
+
+#ifndef EWOULDBLOCK
+# define EWOULDBLOCK EAGAIN
+#endif
+
+#ifndef INET6_ADDRSTRLEN	/* for non IPv6 machines */
+#define INET6_ADDRSTRLEN 46
+#endif
+
+#ifndef SSH_IOBUFSZ
+# define SSH_IOBUFSZ 8192
+#endif
+
+/*
+ * Platforms that have arc4random_uniform() and not arc4random_stir()
+ * shouldn't need the latter.
+ */
+#if defined(HAVE_ARC4RANDOM) && defined(HAVE_ARC4RANDOM_UNIFORM) && \
+    !defined(HAVE_ARC4RANDOM_STIR)
+# define arc4random_stir()
+#endif
+
+#ifndef HAVE_VA_COPY
+# ifdef HAVE___VA_COPY
+#  define va_copy(dest, src) __va_copy(dest, src)
+# else
+#  define va_copy(dest, src) (dest) = (src)
+# endif
+#endif
+
+#ifndef __predict_true
+# if defined(__GNUC__) && \
+     ((__GNUC__ > (2)) || (__GNUC__ == (2) && __GNUC_MINOR__ >= (96)))
+#  define __predict_true(exp)     __builtin_expect(((exp) != 0), 1)
+#  define __predict_false(exp)    __builtin_expect(((exp) != 0), 0)
+# else
+#  define __predict_true(exp)     ((exp) != 0)
+#  define __predict_false(exp)    ((exp) != 0)
+# endif /* gcc version */
+#endif /* __predict_true */
 
 #endif /* _DEFINES_H */

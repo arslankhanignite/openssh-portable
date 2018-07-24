@@ -1,3 +1,4 @@
+/* $OpenBSD: auth2-kbdint.c,v 1.7 2014/07/15 15:54:14 millert Exp $ */
 /*
  * Copyright (c) 2000 Markus Friedl.  All rights reserved.
  *
@@ -23,13 +24,20 @@
  */
 
 #include "includes.h"
-RCSID("$OpenBSD: auth2-kbdint.c,v 1.2 2002/05/31 11:35:15 markus Exp $");
 
+#include <sys/types.h>
+
+#include <stdarg.h>
+
+#include "xmalloc.h"
 #include "packet.h"
+#include "key.h"
+#include "hostfile.h"
 #include "auth.h"
 #include "log.h"
+#include "buffer.h"
+#include "misc.h"
 #include "servconf.h"
-#include "xmalloc.h"
 
 /* import */
 extern ServerOptions options;
@@ -49,12 +57,8 @@ userauth_kbdint(Authctxt *authctxt)
 	if (options.challenge_response_authentication)
 		authenticated = auth2_challenge(authctxt, devs);
 
-	xfree(devs);
-	xfree(lang);
-#ifdef HAVE_CYGWIN
-	if (check_nt_auth(0, authctxt->pw) == 0)
-		return(0);
-#endif
+	free(devs);
+	free(lang);
 	return authenticated;
 }
 

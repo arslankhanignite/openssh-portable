@@ -1,4 +1,4 @@
-/*	$OpenBSD: sshconnect.h,v 1.17 2002/06/19 00:27:55 deraadt Exp $	*/
+/* $OpenBSD: sshconnect.h,v 1.28 2013/10/16 02:31:47 djm Exp $ */
 
 /*
  * Copyright (c) 2000 Markus Friedl.  All rights reserved.
@@ -23,8 +23,6 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-#ifndef SSHCONNECT_H
-#define SSHCONNECT_H
 
 typedef struct Sensitive Sensitive;
 struct Sensitive {
@@ -33,37 +31,45 @@ struct Sensitive {
 	int	external_keysign;
 };
 
-int
-ssh_connect(const char *, struct sockaddr_storage *, u_short, int, int,
-    int, const char *);
+struct addrinfo;
+int	 ssh_connect(const char *, struct addrinfo *, struct sockaddr_storage *,
+    u_short, int, int, int *, int, int);
+void	 ssh_kill_proxy_command(void);
 
-void
-ssh_login(Sensitive *, const char *, struct sockaddr *, struct passwd *);
+void	 ssh_login(Sensitive *, const char *, struct sockaddr *, u_short,
+    struct passwd *, int);
+
+void	 ssh_exchange_identification(int);
 
 int	 verify_host_key(char *, struct sockaddr *, Key *);
 
+void	 get_hostfile_hostname_ipaddr(char *, struct sockaddr *, u_short,
+    char **, char **);
+
 void	 ssh_kex(char *, struct sockaddr *);
-void	 ssh_kex2(char *, struct sockaddr *);
+void	 ssh_kex2(char *, struct sockaddr *, u_short);
 
 void	 ssh_userauth1(const char *, const char *, char *, Sensitive *);
 void	 ssh_userauth2(const char *, const char *, char *, Sensitive *);
 
 void	 ssh_put_password(char *);
-
+int	 ssh_local_cmd(const char *);
 
 /*
  * Macros to raise/lower permissions.
  */
-#define PRIV_START do {				\
-	int save_errno = errno;			\
-	(void)seteuid(original_effective_uid);	\
-	errno = save_errno;			\
+#define PRIV_START do {					\
+	int save_errno = errno;				\
+	if (seteuid(original_effective_uid) != 0)	\
+		fatal("PRIV_START: seteuid: %s",	\
+		    strerror(errno));			\
+	errno = save_errno;				\
 } while (0)
 
-#define PRIV_END do {				\
-	int save_errno = errno;			\
-	(void)seteuid(original_real_uid);	\
-	errno = save_errno;			\
+#define PRIV_END do {					\
+	int save_errno = errno;				\
+	if (seteuid(original_real_uid) != 0)		\
+		fatal("PRIV_END: seteuid: %s",		\
+		    strerror(errno));			\
+	errno = save_errno;				\
 } while (0)
-
-#endif

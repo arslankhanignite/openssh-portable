@@ -111,6 +111,7 @@ passphrase_dialog(char *message)
 
 	gtk_window_set_title(GTK_WINDOW(dialog), "OpenSSH");
 	gtk_window_set_position (GTK_WINDOW(dialog), GTK_WIN_POS_CENTER);
+	gtk_window_set_keep_above(GTK_WINDOW(dialog), TRUE);
 	gtk_label_set_line_wrap(GTK_LABEL((GTK_MESSAGE_DIALOG(dialog))->label),
 				TRUE);
 
@@ -118,6 +119,8 @@ passphrase_dialog(char *message)
 	gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_OK);
 	g_signal_connect(G_OBJECT(entry), "activate",
 			 G_CALLBACK(ok_dialog), dialog);
+
+	gtk_window_set_keep_above(GTK_WINDOW(dialog), TRUE);
 
 	/* Grab focus */
 	gtk_widget_show_now(dialog);

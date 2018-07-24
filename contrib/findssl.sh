@@ -1,5 +1,7 @@
 #!/bin/sh
 #
+# $Id: findssl.sh,v 1.4 2007/02/19 11:44:25 dtucker Exp $
+#
 # findssl.sh
 #	Search for all instances of OpenSSL headers and libraries
 #	and print their versions.
@@ -9,10 +11,11 @@
 #	Written by Darren Tucker (dtucker at zip dot com dot au)
 #	This file is placed in the public domain.
 #
-# $Id: findssl.sh,v 1.2 2003/11/21 12:48:56 djm Exp $
+#	Release history:
 #	2002-07-27: Initial release.
 #	2002-08-04: Added public domain notice.
 #	2003-06-24: Incorporated readme, set library paths. First cvs version.
+#	2004-12-13: Add traps to cleanup temp files, from Amarendra Godbole.
 #
 # "OpenSSL headers do not match your library" are usually caused by
 # OpenSSH's configure picking up an older version of OpenSSL headers
@@ -64,6 +67,11 @@ CC=gcc
 STATIC=-static
 
 #
+# Cleanup on interrupt
+#
+trap 'rm -f conftest.c' INT HUP TERM
+
+#
 # Set up conftest C source
 #
 rm -f findssl.log
@@ -80,6 +88,25 @@ LIBPATH=${LIBPATH:=$DEFAULT_LIBPATH}
 LD_LIBRARY_PATH=${LD_LIBRARY_PATH:=$DEFAULT_LIBPATH}
 LIBRARY_PATH=${LIBRARY_PATH:=$DEFAULT_LIBPATH}
 export LIBPATH LD_LIBRARY_PATH LIBRARY_PATH
+
+# not all platforms have a 'which' command
+if which ls >/dev/null 2>/dev/null; then
+    : which is defined
+else
+    which () {
+	saveIFS="$IFS"
+	IFS=:
+	for p in $PATH; do
+	    if test -x "$p/$1" -a -f "$p/$1"; then
+		IFS="$saveIFS"
+		echo "$p/$1"
+		return 0
+	    fi
+	done
+	IFS="$saveIFS"
+	return 1
+    }
+fi
 
 #
 # Search for OpenSSL headers and print versions

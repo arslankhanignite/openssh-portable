@@ -1,3 +1,4 @@
+/* $OpenBSD: auth2-passwd.c,v 1.12 2014/07/15 15:54:14 millert Exp $ */
 /*
  * Copyright (c) 2000 Markus Friedl.  All rights reserved.
  *
@@ -23,13 +24,24 @@
  */
 
 #include "includes.h"
-RCSID("$OpenBSD: auth2-passwd.c,v 1.5 2003/12/31 00:24:50 dtucker Exp $");
+
+#include <sys/types.h>
+
+#include <string.h>
+#include <stdarg.h>
 
 #include "xmalloc.h"
 #include "packet.h"
 #include "log.h"
+#include "key.h"
+#include "hostfile.h"
 #include "auth.h"
+#include "buffer.h"
+#ifdef GSSAPI
+#include "ssh-gss.h"
+#endif
 #include "monitor_wrap.h"
+#include "misc.h"
 #include "servconf.h"
 
 /* import */
@@ -48,21 +60,17 @@ userauth_passwd(Authctxt *authctxt)
 	if (change) {
 		/* discard new password from packet */
 		newpass = packet_get_string(&newlen);
-		memset(newpass, 0, newlen);
-		xfree(newpass);
+		explicit_bzero(newpass, newlen);
+		free(newpass);
 	}
 	packet_check_eom();
 
 	if (change)
 		logit("password change not supported");
-	else if (PRIVSEP(auth_password(authctxt, password)) == 1
-#ifdef HAVE_CYGWIN
-	    && check_nt_auth(1, authctxt->pw)
-#endif
-	    )
+	else if (PRIVSEP(auth_password(authctxt, password)) == 1)
 		authenticated = 1;
-	memset(password, 0, len);
-	xfree(password);
+	explicit_bzero(password, len);
+	free(password);
 	return authenticated;
 }
 

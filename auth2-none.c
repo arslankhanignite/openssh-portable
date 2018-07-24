@@ -1,3 +1,4 @@
+/* $OpenBSD: auth2-none.c,v 1.18 2014/07/15 15:54:14 millert Exp $ */
 /*
  * Copyright (c) 2000 Markus Friedl.  All rights reserved.
  *
@@ -23,16 +24,32 @@
  */
 
 #include "includes.h"
-RCSID("$OpenBSD: auth2-none.c,v 1.6 2003/08/26 09:58:43 markus Exp $");
 
-#include "auth.h"
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/uio.h>
+
+#include <fcntl.h>
+#include <string.h>
+#include <unistd.h>
+#include <stdarg.h>
+#include <stdio.h>
+
+#include "atomicio.h"
 #include "xmalloc.h"
+#include "key.h"
+#include "hostfile.h"
+#include "auth.h"
 #include "packet.h"
 #include "log.h"
+#include "buffer.h"
+#include "misc.h"
 #include "servconf.h"
-#include "atomicio.h"
 #include "compat.h"
 #include "ssh2.h"
+#ifdef GSSAPI
+#include "ssh-gss.h"
+#endif
 #include "monitor_wrap.h"
 
 /* import */
@@ -41,66 +58,12 @@ extern ServerOptions options;
 /* "none" is allowed only one time */
 static int none_enabled = 1;
 
-char *
-auth2_read_banner(void)
-{
-	struct stat st;
-	char *banner = NULL;
-	off_t len, n;
-	int fd;
-
-	if ((fd = open(options.banner, O_RDONLY)) == -1)
-		return (NULL);
-	if (fstat(fd, &st) == -1) {
-		close(fd);
-		return (NULL);
-	}
-	len = st.st_size;
-	banner = xmalloc(len + 1);
-	n = atomicio(read, fd, banner, len);
-	close(fd);
-
-	if (n != len) {
-		xfree(banner);
-		return (NULL);
-	}
-	banner[n] = '\0';
-
-	return (banner);
-}
-
-static void
-userauth_banner(void)
-{
-	char *banner = NULL;
-
-	if (options.banner == NULL || (datafellows & SSH_BUG_BANNER))
-		return;
-
-	if ((banner = PRIVSEP(auth2_read_banner())) == NULL)
-		goto done;
-
-	packet_start(SSH2_MSG_USERAUTH_BANNER);
-	packet_put_cstring(banner);
-	packet_put_cstring("");		/* language, unused */
-	packet_send();
-	debug("userauth_banner: sent");
-done:
-	if (banner)
-		xfree(banner);
-}
-
 static int
 userauth_none(Authctxt *authctxt)
 {
 	none_enabled = 0;
 	packet_check_eom();
-	userauth_banner();
-#ifdef HAVE_CYGWIN
-	if (check_nt_auth(1, authctxt->pw) == 0)
-		return(0);
-#endif
-	if (options.password_authentication)
+	if (options.permit_empty_passwd && options.password_authentication)
 		return (PRIVSEP(auth_password(authctxt, "")));
 	return (0);
 }

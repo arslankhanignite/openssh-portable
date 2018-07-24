@@ -1,3 +1,4 @@
+/* $OpenBSD: groupaccess.c,v 1.16 2015/05/04 06:10:48 djm Exp $ */
 /*
  * Copyright (c) 2001 Kevin Steves.  All rights reserved.
  *
@@ -23,10 +24,18 @@
  */
 
 #include "includes.h"
-RCSID("$OpenBSD: groupaccess.c,v 1.6 2003/04/08 20:21:28 itojun Exp $");
 
-#include "groupaccess.h"
+#include <sys/types.h>
+
+#include <grp.h>
+#include <unistd.h>
+#include <stdarg.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+
 #include "xmalloc.h"
+#include "groupaccess.h"
 #include "match.h"
 #include "log.h"
 
@@ -52,15 +61,15 @@ ga_init(const char *user, gid_t base)
 	ngroups = MAX(NGROUPS_MAX, sysconf(_SC_NGROUPS_MAX));
 #endif
 
-	groups_bygid = xmalloc(ngroups * sizeof(*groups_bygid));
-	groups_byname = xmalloc(ngroups * sizeof(*groups_byname));
+	groups_bygid = xcalloc(ngroups, sizeof(*groups_bygid));
+	groups_byname = xcalloc(ngroups, sizeof(*groups_byname));
 
 	if (getgrouplist(user, base, groups_bygid, &ngroups) == -1)
 		logit("getgrouplist: groups list too small");
 	for (i = 0, j = 0; i < ngroups; i++)
 		if ((gr = getgrgid(groups_bygid[i])) != NULL)
 			groups_byname[j++] = xstrdup(gr->gr_name);
-	xfree(groups_bygid);
+	free(groups_bygid);
 	return (ngroups = j);
 }
 
@@ -81,6 +90,28 @@ ga_match(char * const *groups, int n)
 }
 
 /*
+ * Return 1 if one of user's groups matches group_pattern list.
+ * Return 0 on negated or no match.
+ */
+int
+ga_match_pattern_list(const char *group_pattern)
+{
+	int i, found = 0;
+
+	for (i = 0; i < ngroups; i++) {
+		switch (match_pattern_list(groups_byname[i], group_pattern, 0)) {
+		case -1:
+			return 0;	/* Negated match wins */
+		case 0:
+			continue;
+		case 1:
+			found = 1;
+		}
+	}
+	return found;
+}
+
+/*
  * Free memory allocated for group access list.
  */
 void
@@ -90,8 +121,8 @@ ga_free(void)
 
 	if (ngroups > 0) {
 		for (i = 0; i < ngroups; i++)
-			xfree(groups_byname[i]);
+			free(groups_byname[i]);
 		ngroups = 0;
-		xfree(groups_byname);
+		free(groups_byname);
 	}
 }

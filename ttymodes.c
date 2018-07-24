@@ -1,3 +1,4 @@
+/* $OpenBSD: ttymodes.c,v 1.29 2008/11/02 00:16:16 stevesk Exp $ */
 /*
  * Author: Tatu Ylonen <ylo@cs.hut.fi>
  * Copyright (c) 1995 Tatu Ylonen <ylo@cs.hut.fi>, Espoo, Finland
@@ -43,14 +44,19 @@
  */
 
 #include "includes.h"
-RCSID("$OpenBSD: ttymodes.c,v 1.19 2003/04/08 20:21:29 itojun Exp $");
+
+#include <sys/types.h>
+
+#include <errno.h>
+#include <string.h>
+#include <termios.h>
+#include <stdarg.h>
 
 #include "packet.h"
 #include "log.h"
 #include "ssh1.h"
 #include "compat.h"
 #include "buffer.h"
-#include "bufaux.h"
 
 #define TTY_OP_END		0
 /*
@@ -241,6 +247,32 @@ baud_to_speed(int baud)
 }
 
 /*
+ * Encode a special character into SSH line format.
+ */
+static u_int
+special_char_encode(cc_t c)
+{
+#ifdef _POSIX_VDISABLE
+	if (c == _POSIX_VDISABLE)
+		return 255;
+#endif /* _POSIX_VDISABLE */
+	return c;
+}
+
+/*
+ * Decode a special character from SSH line format.
+ */
+static cc_t
+special_char_decode(u_int c)
+{
+#ifdef _POSIX_VDISABLE
+	if (c == 255)
+		return _POSIX_VDISABLE;
+#endif /* _POSIX_VDISABLE */
+	return c;
+}
+
+/*
  * Encodes terminal modes for the terminal referenced by fd
  * or tiop in a portable manner, and appends the modes to a packet
  * being constructed.
@@ -266,6 +298,10 @@ tty_make_modes(int fd, struct termios *tiop)
 	}
 
 	if (tiop == NULL) {
+		if (fd == -1) {
+			debug("tty_make_modes: no fd or tio");
+			goto end;
+		}
 		if (tcgetattr(fd, &tio) == -1) {
 			logit("tcgetattr: %.100s", strerror(errno));
 			goto end;
@@ -275,22 +311,18 @@ tty_make_modes(int fd, struct termios *tiop)
 
 	/* Store input and output baud rates. */
 	baud = speed_to_baud(cfgetospeed(&tio));
-	debug3("tty_make_modes: ospeed %d", baud);
 	buffer_put_char(&buf, tty_op_ospeed);
 	buffer_put_int(&buf, baud);
 	baud = speed_to_baud(cfgetispeed(&tio));
-	debug3("tty_make_modes: ispeed %d", baud);
 	buffer_put_char(&buf, tty_op_ispeed);
 	buffer_put_int(&buf, baud);
 
 	/* Store values of mode flags. */
 #define TTYCHAR(NAME, OP) \
-	debug3("tty_make_modes: %d %d", OP, tio.c_cc[NAME]); \
 	buffer_put_char(&buf, OP); \
-	put_arg(&buf, tio.c_cc[NAME]);
+	put_arg(&buf, special_char_encode(tio.c_cc[NAME]));
 
 #define TTYMODE(NAME, FIELD, OP) \
-	debug3("tty_make_modes: %d %d", OP, ((tio.FIELD & NAME) != 0)); \
 	buffer_put_char(&buf, OP); \
 	put_arg(&buf, ((tio.FIELD & NAME) != 0));
 
@@ -321,11 +353,10 @@ tty_parse_modes(int fd, int *n_bytes_ptr)
 	int n_bytes = 0;
 	int failure = 0;
 	u_int (*get_arg)(void);
-	int arg, arg_size;
+	int arg_size;
 
 	if (compat20) {
 		*n_bytes_ptr = packet_get_int();
-		debug3("tty_parse_modes: SSH2 n_bytes %d", *n_bytes_ptr);
 		if (*n_bytes_ptr == 0)
 			return;
 		get_arg = packet_get_int;
@@ -357,8 +388,8 @@ tty_parse_modes(int fd, int *n_bytes_ptr)
 		case TTY_OP_ISPEED_PROTO2:
 			n_bytes += 4;
 			baud = packet_get_int();
-			debug3("tty_parse_modes: ispeed %d", baud);
-			if (failure != -1 && cfsetispeed(&tio, baud_to_speed(baud)) == -1)
+			if (failure != -1 &&
+			    cfsetispeed(&tio, baud_to_speed(baud)) == -1)
 				error("cfsetispeed failed for %d", baud);
 			break;
 
@@ -367,25 +398,23 @@ tty_parse_modes(int fd, int *n_bytes_ptr)
 		case TTY_OP_OSPEED_PROTO2:
 			n_bytes += 4;
 			baud = packet_get_int();
-			debug3("tty_parse_modes: ospeed %d", baud);
-			if (failure != -1 && cfsetospeed(&tio, baud_to_speed(baud)) == -1)
+			if (failure != -1 &&
+			    cfsetospeed(&tio, baud_to_speed(baud)) == -1)
 				error("cfsetospeed failed for %d", baud);
 			break;
 
 #define TTYCHAR(NAME, OP) \
 	case OP: \
 	  n_bytes += arg_size; \
-	  tio.c_cc[NAME] = get_arg(); \
-	  debug3("tty_parse_modes: %d %d", OP, tio.c_cc[NAME]); \
+	  tio.c_cc[NAME] = special_char_decode(get_arg()); \
 	  break;
 #define TTYMODE(NAME, FIELD, OP) \
 	case OP: \
 	  n_bytes += arg_size; \
-	  if ((arg = get_arg())) \
+	  if (get_arg()) \
 	    tio.FIELD |= NAME; \
 	  else \
 	    tio.FIELD &= ~NAME;	\
-	  debug3("tty_parse_modes: %d %d", OP, arg); \
 	  break;
 
 #include "ttymodes.h"
@@ -416,11 +445,12 @@ tty_parse_modes(int fd, int *n_bytes_ptr)
 					/*
 					 * It is a truly undefined opcode (160 to 255).
 					 * We have no idea about its arguments.  So we
-					 * must stop parsing.  Note that some data may be
-					 * left in the packet; hopefully there is nothing
-					 * more coming after the mode data.
+					 * must stop parsing.  Note that some data
+					 * may be left in the packet; hopefully there
+					 * is nothing more coming after the mode data.
 					 */
-					logit("parse_tty_modes: unknown opcode %d", opcode);
+					logit("parse_tty_modes: unknown opcode %d",
+					    opcode);
 					goto set;
 				}
 			} else {
@@ -436,7 +466,8 @@ tty_parse_modes(int fd, int *n_bytes_ptr)
 					(void) packet_get_int();
 					break;
 				} else {
-					logit("parse_tty_modes: unknown opcode %d", opcode);
+					logit("parse_tty_modes: unknown opcode %d",
+					    opcode);
 					goto set;
 				}
 			}

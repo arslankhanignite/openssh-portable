@@ -31,12 +31,6 @@
 
 #include "includes.h"
 
-#include <sys/types.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-
-/* RCSID("$Id: loginrec.h,v 1.7 2003/06/03 02:18:50 djm Exp $"); */
-
 /**
  ** you should use the login_* calls to work around platform dependencies
  **/
@@ -62,15 +56,15 @@ union login_netinfo {
 /* string lengths - set very long */
 #define LINFO_PROGSIZE 64
 #define LINFO_LINESIZE 64
-#define LINFO_NAMESIZE 64
+#define LINFO_NAMESIZE 512
 #define LINFO_HOSTSIZE 256
 
 struct logininfo {
 	char       progname[LINFO_PROGSIZE];     /* name of program (for PAM) */
 	int        progname_null;
 	short int  type;                         /* type of login (LTYPE_*) */
-	int        pid;                          /* PID of login process */
-	int        uid;                          /* UID of this user */
+	pid_t      pid;                          /* PID of login process */
+	uid_t      uid;                          /* UID of this user */
 	char       line[LINFO_LINESIZE];         /* tty/pty name */
 	char       username[LINFO_NAMESIZE];     /* login username */
 	char       hostname[LINFO_HOSTSIZE];     /* remote hostname */
@@ -92,12 +86,12 @@ struct logininfo {
 /** 'public' functions */
 
 /* construct a new login entry */
-struct logininfo *login_alloc_entry(int pid, const char *username,
+struct logininfo *login_alloc_entry(pid_t pid, const char *username,
 				    const char *hostname, const char *line);
 /* free a structure */
 void login_free_entry(struct logininfo *li);
 /* fill out a pre-allocated structure with useful information */
-int login_init_entry(struct logininfo *li, int pid, const char *username,
+int login_init_entry(struct logininfo *li, pid_t pid, const char *username,
 		     const char *hostname, const char *line);
 /* place the current time in a logininfo struct */
 void login_set_current_time(struct logininfo *li);
@@ -123,13 +117,15 @@ void login_set_addr(struct logininfo *li, const struct sockaddr *sa,
  * lastlog retrieval functions
  */
 /* lastlog *entry* functions fill out a logininfo */
-struct logininfo *login_get_lastlog(struct logininfo *li, const int uid);
+struct logininfo *login_get_lastlog(struct logininfo *li, const uid_t uid);
 /* lastlog *time* functions return time_t equivalent (uint) */
-unsigned int login_get_lastlog_time(const int uid);
+unsigned int login_get_lastlog_time(const uid_t uid);
 
 /* produce various forms of the line filename */
-char *line_fullname(char *dst, const char *src, int dstsize);
+char *line_fullname(char *dst, const char *src, u_int dstsize);
 char *line_stripname(char *dst, const char *src, int dstsize);
 char *line_abbrevname(char *dst, const char *src, int dstsize);
+
+void record_failed_login(const char *, const char *, const char *);
 
 #endif /* _HAVE_LOGINREC_H_ */

@@ -24,7 +24,11 @@
 
 #include "includes.h"
 
-# ifdef HAVE_CRYPT_H
+#include <sys/types.h>
+#include <unistd.h>
+#include <pwd.h>
+
+# if defined(HAVE_CRYPT_H) && !defined(HAVE_SECUREWARE)
 #  include <crypt.h>
 # endif
 
@@ -51,7 +55,12 @@
 
 # if defined(HAVE_MD5_PASSWORDS) && !defined(HAVE_MD5_CRYPT)
 #  include "md5crypt.h"
-# endif 
+# endif
+
+# if defined(WITH_OPENSSL) && !defined(HAVE_CRYPT) && defined(HAVE_DES_CRYPT)
+#  include <openssl/des.h>
+#  define crypt DES_crypt
+# endif
 
 char *
 xcrypt(const char *password, const char *salt)
@@ -93,6 +102,11 @@ shadow_pw(struct passwd *pw)
 	if (spw != NULL)
 		pw_password = spw->sp_pwdp;
 # endif
+
+#ifdef USE_LIBIAF
+	return(get_iaf_password(pw));
+#endif
+
 # if defined(HAVE_GETPWANAM) && !defined(DISABLE_SHADOW)
 	struct passwd_adjunct *spw;
 	if (issecure() && (spw = getpwanam(pw->pw_name)) != NULL)

@@ -1,6 +1,9 @@
 #!/usr/bin/awk
 #
+# $Id: mdoc2man.awk,v 1.9 2009/10/24 00:52:42 dtucker Exp $
+#
 # Version history:
+#  v4+ Adapted for OpenSSH Portable (see cvs Id and history)
 #  v3, I put the program under a proper license
 #      Dan Nelson <dnelson@allantgroup.com> added .An, .Aq and fixed a typo
 #  v2, fixed to work on GNU awk --posix and MacOS X
@@ -32,6 +35,7 @@ BEGIN {
   extopt=0
   literal=0
   prenl=0
+  breakw=0
   line=""
 }
 
@@ -134,11 +138,23 @@ function add(str) {
 	nospace=0
     }
     if(match(words[w],"^Dd$")) {
+      if(match(words[w+1],"^\\$Mdocdate:")) {
+        w++;
+        if(match(words[w+4],"^\\$$")) {
+          words[w+4] = ""
+        }
+      }
       date=wtail()
       next
     } else if(match(words[w],"^Dt$")) {
       id=wtail()
       next
+    } else if(match(words[w],"^Ux$")) {
+      add("UNIX")
+      skip=1
+    } else if(match(words[w],"^Ox$")) {
+      add("OpenBSD")
+      skip=1
     } else if(match(words[w],"^Os$")) {
       add(".TH " id " \"" date "\" \"" wtail() "\"")
     } else if(match(words[w],"^Sh$")) {
@@ -153,6 +169,7 @@ function add(str) {
       refissue=""
       refdate=""
       refopt=""
+      refreport=""
       reference=1
       next
     } else if(match(words[w],"^Re$")) {
@@ -164,9 +181,14 @@ function add(str) {
       }
       if(nrefauthors>1)
 	add(" and ")
-      add(refauthors[0] ", \\fI" reftitle "\\fP")
+      if(nrefauthors>0)
+        add(refauthors[0] ", ")
+      add("\\fI" reftitle "\\fP")
       if(length(refissue))
 	add(", " refissue)
+      if(length(refreport)) {
+	add(", " refreport)
+      }
       if(length(refdate))
 	add(", " refdate)
       if(length(refopt))
@@ -183,6 +205,7 @@ function add(str) {
       if(match(words[w],"^%N$")) { refissue=wtail() }
       if(match(words[w],"^%D$")) { refdate=wtail() }
       if(match(words[w],"^%O$")) { refopt=wtail() }
+      if(match(words[w],"^%R$")) { refreport=wtail() }
     } else if(match(words[w],"^Nm$")) {
       if(synopsis) {
 	add(".br")
@@ -298,6 +321,13 @@ function add(str) {
       w=nwords
     } else if(match(words[w],"^El$")) {
       optlist=oldoptlist
+    } else if(match(words[w],"^Bk$")) {
+      if(match(words[w+1],"-words")) {
+	w++
+	breakw=1
+      }
+    } else if(match(words[w],"^Ek$")) {
+      breakw=0
     } else if(match(words[w],"^It$")&&optlist) {
       if(optlist==1)
 	add(".IP \\(bu")
@@ -306,7 +336,7 @@ function add(str) {
       else if(optlist==3) {
 	add(".TP")
 	prenl++
-	if(match(words[w+1],"^Pa|Ev$")) {
+	if(match(words[w+1],"^Pa$|^Ev$")) {
 	  add(".B")
 	  w++
 	}

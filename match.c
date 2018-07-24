@@ -1,3 +1,4 @@
+/* $OpenBSD: match.c,v 1.30 2015/05/04 06:10:48 djm Exp $ */
 /*
  * Author: Tatu Ylonen <ylo@cs.hut.fi>
  * Copyright (c) 1995 Tatu Ylonen <ylo@cs.hut.fi>, Espoo, Finland
@@ -35,10 +36,15 @@
  */
 
 #include "includes.h"
-RCSID("$OpenBSD: match.c,v 1.19 2002/03/01 13:12:10 markus Exp $");
 
-#include "match.h"
+#include <sys/types.h>
+
+#include <ctype.h>
+#include <stdlib.h>
+#include <string.h>
+
 #include "xmalloc.h"
+#include "match.h"
 
 /*
  * Returns true if the given string matches the pattern (which may contain ?
@@ -109,15 +115,13 @@ match_pattern(const char *s, const char *pattern)
  * indicate negation).  Returns -1 if negation matches, 1 if there is
  * a positive match, 0 if there is no match at all.
  */
-
 int
-match_pattern_list(const char *string, const char *pattern, u_int len,
-    int dolower)
+match_pattern_list(const char *string, const char *pattern, int dolower)
 {
 	char sub[1024];
 	int negated;
 	int got_positive;
-	u_int i, subi;
+	u_int i, subi, len = strlen(pattern);
 
 	got_positive = 0;
 	for (i = 0; i < len;) {
@@ -135,8 +139,8 @@ match_pattern_list(const char *string, const char *pattern, u_int len,
 		for (subi = 0;
 		    i < len && subi < sizeof(sub) - 1 && pattern[i] != ',';
 		    subi++, i++)
-			sub[subi] = dolower && isupper(pattern[i]) ?
-			    tolower(pattern[i]) : pattern[i];
+			sub[subi] = dolower && isupper((u_char)pattern[i]) ?
+			    tolower((u_char)pattern[i]) : pattern[i];
 		/* If subpattern too long, return failure (no match). */
 		if (subi >= sizeof(sub) - 1)
 			return 0;
@@ -171,14 +175,15 @@ match_pattern_list(const char *string, const char *pattern, u_int len,
  * a positive match, 0 if there is no match at all.
  */
 int
-match_hostname(const char *host, const char *pattern, u_int len)
+match_hostname(const char *host, const char *pattern)
 {
-	return match_pattern_list(host, pattern, len, 1);
+	return match_pattern_list(host, pattern, 1);
 }
 
 /*
  * returns 0 if we get a negative match for the hostname or the ip
- * or if we get no match at all.  returns 1 otherwise.
+ * or if we get no match at all.  returns -1 on error, or 1 on
+ * successful match.
  */
 int
 match_host_and_ip(const char *host, const char *ipaddr,
@@ -186,11 +191,14 @@ match_host_and_ip(const char *host, const char *ipaddr,
 {
 	int mhost, mip;
 
-	/* negative ipaddr match */
-	if ((mip = match_hostname(ipaddr, patterns, strlen(patterns))) == -1)
+	/* error in ipaddr match */
+	if ((mip = addr_match_list(ipaddr, patterns)) == -2)
+		return -1;
+	else if (mip == -1) /* negative ip address match */
 		return 0;
+
 	/* negative hostname match */
-	if ((mhost = match_hostname(host, patterns, strlen(patterns))) == -1)
+	if ((mhost = match_hostname(host, patterns)) == -1)
 		return 0;
 	/* no match at all */
 	if (mhost == 0 && mip == 0)
@@ -217,14 +225,14 @@ match_user(const char *user, const char *host, const char *ipaddr,
 
 	if ((ret = match_pattern(user, pat)) == 1)
 		ret = match_host_and_ip(host, ipaddr, p);
-	xfree(pat);
+	free(pat);
 
 	return ret;
 }
 
 /*
  * Returns first item from client-list that is also supported by server-list,
- * caller must xfree() returned string.
+ * caller must free the returned string.
  */
 #define	MAX_PROP	40
 #define	SEP	","
@@ -254,16 +262,16 @@ match_list(const char *client, const char *server, u_int *next)
 				ret = xstrdup(p);
 				if (next != NULL)
 					*next = (cp == NULL) ?
-					    strlen(c) : cp - c;
-				xfree(c);
-				xfree(s);
+					    strlen(c) : (u_int)(cp - c);
+				free(c);
+				free(s);
 				return ret;
 			}
 		}
 	}
 	if (next != NULL)
 		*next = strlen(c);
-	xfree(c);
-	xfree(s);
+	free(c);
+	free(s);
 	return NULL;
 }

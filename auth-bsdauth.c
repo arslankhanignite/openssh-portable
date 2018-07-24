@@ -1,3 +1,4 @@
+/* $OpenBSD: auth-bsdauth.c,v 1.13 2014/06/24 01:13:21 djm Exp $ */
 /*
  * Copyright (c) 2001 Markus Friedl.  All rights reserved.
  *
@@ -21,13 +22,25 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+
 #include "includes.h"
-RCSID("$OpenBSD: auth-bsdauth.c,v 1.5 2002/06/30 21:59:45 deraadt Exp $");
+
+#include <sys/types.h>
+#include <stdarg.h>
+#include <stdio.h>
+
+#include <stdarg.h>
 
 #ifdef BSD_AUTH
 #include "xmalloc.h"
+#include "key.h"
+#include "hostfile.h"
 #include "auth.h"
 #include "log.h"
+#include "buffer.h"
+#ifdef GSSAPI
+#include "ssh-gss.h"
+#endif
 #include "monitor_wrap.h"
 
 static void *
@@ -42,6 +55,11 @@ bsdauth_query(void *ctx, char **name, char **infotxt,
 {
 	Authctxt *authctxt = ctx;
 	char *challenge = NULL;
+
+	*infotxt = NULL;
+	*numprompts = 0;
+	*prompts = NULL;
+	*echo_on = NULL;
 
 	if (authctxt->as != NULL) {
 		debug2("bsdauth_query: try reuse session");
@@ -69,9 +87,8 @@ bsdauth_query(void *ctx, char **name, char **infotxt,
 	*name = xstrdup("");
 	*infotxt = xstrdup("");
 	*numprompts = 1;
-	*prompts = xmalloc(*numprompts * sizeof(char *));
-	*echo_on = xmalloc(*numprompts * sizeof(u_int));
-	(*echo_on)[0] = 0;
+	*prompts = xcalloc(*numprompts, sizeof(char *));
+	*echo_on = xcalloc(*numprompts, sizeof(u_int));
 	(*prompts)[0] = xstrdup(challenge);
 
 	return 0;
@@ -82,6 +99,9 @@ bsdauth_respond(void *ctx, u_int numresponses, char **responses)
 {
 	Authctxt *authctxt = ctx;
 	int authok;
+
+	if (!authctxt->valid)
+		return -1;
 
 	if (authctxt->as == 0)
 		error("bsdauth_respond: no bsd auth session");

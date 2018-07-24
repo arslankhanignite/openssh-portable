@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # buildbff.sh: Create AIX SMIT-installable OpenSSH packages
-# $Id: buildbff.sh,v 1.7 2003/11/21 12:48:56 djm Exp $
+# $Id: buildbff.sh,v 1.13 2011/05/05 03:48:41 djm Exp $
 #
 # Author: Darren Tucker (dtucker at zip dot com dot au)
 # This file is placed in the public domain and comes with absolutely
@@ -22,6 +22,8 @@
 umask 022
 
 startdir=`pwd`
+
+perl -v >/dev/null || (echo perl required; exit 1)
 
 # Path to inventory.sh: same place as buildbff.sh
 if  echo $0 | egrep '^/'
@@ -149,7 +151,7 @@ fi
 
 
 # Rename config files; postinstall script will copy them if necessary
-for cfgfile in ssh_config sshd_config ssh_prng_cmds
+for cfgfile in ssh_config sshd_config
 do
 	mv $FAKE_ROOT/$sysconfdir/$cfgfile $FAKE_ROOT/$sysconfdir/$cfgfile.default
 done
@@ -188,7 +190,7 @@ cat <<EOF >>../openssh.post_i
 #!/bin/sh
 
 echo Creating configs from defaults if necessary.
-for cfgfile in ssh_config sshd_config ssh_prng_cmds
+for cfgfile in ssh_config sshd_config
 do
 	if [ ! -f $sysconfdir/\$cfgfile ]
 	then
@@ -200,33 +202,29 @@ do
 done
 echo
 
-# Create PrivSep user if PrivSep not disabled in config
-echo Creating PrivSep prereqs if required.
+# Create PrivilegeSeparation user and group if not present
+echo Checking for PrivilegeSeparation user and group.
+if cut -f1 -d: /etc/group | egrep '^'$SSH_PRIVSEP_USER'\$' >/dev/null
+then
+	echo "PrivSep group $SSH_PRIVSEP_USER already exists."
+else
+	echo "Creating PrivSep group $SSH_PRIVSEP_USER."
+	mkgroup -A $SSH_PRIVSEP_USER
+fi
+
+# Create user if required
+if lsuser "$SSH_PRIVSEP_USER" >/dev/null
+then
+	echo "PrivSep user $SSH_PRIVSEP_USER already exists."
+else
+	echo "Creating PrivSep user $SSH_PRIVSEP_USER."
+	mkuser gecos='SSHD PrivSep User' login=false rlogin=false account_locked=true pgrp=$SSH_PRIVSEP_USER $SSH_PRIVSEP_USER
+fi
+
 if egrep '^[ \t]*UsePrivilegeSeparation[ \t]+no' $sysconfdir/sshd_config >/dev/null
 then
-	echo "UsePrivilegeSeparation disabled in config, not creating PrivSep user,"
-	echo "group or chroot directory."
+	echo UsePrivilegeSeparation not enabled, privsep directory not required.
 else
-	echo "UsePrivilegeSeparation enabled in config (or defaulting to on)."
-
-	# create group if required
-	if cut -f1 -d: /etc/group | egrep '^'$SSH_PRIVSEP_USER'\$' >/dev/null
-	then
-		echo "PrivSep group $SSH_PRIVSEP_USER already exists."
-	else
-		echo "Creating PrivSep group $SSH_PRIVSEP_USER."
-		mkgroup -A $SSH_PRIVSEP_USER
-	fi
-
-	# Create user if required
-	if lsuser ALL | cut -f1 -d: | egrep '^'$SSH_PRIVSEP_USER'\$' >/dev/null
-	then
-		echo "PrivSep user $SSH_PRIVSEP_USER already exists."
-	else
-		echo "Creating PrivSep user $SSH_PRIVSEP_USER."
-		mkuser gecos='SSHD PrivSep User' login=false rlogin=false account_locked=true pgrp=$SSH_PRIVSEP_USER $SSH_PRIVSEP_USER
-	fi
-
 	# create chroot directory if required
 	if [ -d $PRIVSEP_PATH ]
 	then

@@ -35,10 +35,15 @@
 
 #ifndef HAVE_SETPROCTITLE
 
+#include <stdarg.h>
+#include <stdlib.h>
 #include <unistd.h>
 #ifdef HAVE_SYS_PSTAT_H
 #include <sys/pstat.h>
 #endif
+#include <string.h>
+
+#include <vis.h>
 
 #define SPT_NONE	0	/* don't use it at all */
 #define SPT_PSTAT	1	/* use pstat(PSTAT_SETCMD, ...) */
@@ -62,7 +67,8 @@ static size_t argv_env_len = 0;
 void
 compat_init_setproctitle(int argc, char *argv[])
 {
-#if defined(SPT_TYPE) && SPT_TYPE == SPT_REUSEARGV
+#if !defined(HAVE_SETPROCTITLE) && \
+    defined(SPT_TYPE) && SPT_TYPE == SPT_REUSEARGV
 	extern char **environ;
 	char *lastargv = NULL;
 	char **envp = environ;
@@ -80,7 +86,7 @@ compat_init_setproctitle(int argc, char *argv[])
 	/* Fail if we can't allocate room for the new environment */
 	for (i = 0; envp[i] != NULL; i++)
 		;
-	if ((environ = malloc(sizeof(*environ) * (i + 1))) == NULL) {
+	if ((environ = calloc(i + 1, sizeof(*environ))) == NULL) {
 		environ = envp;	/* put it back */
 		return;
 	}
@@ -118,8 +124,9 @@ setproctitle(const char *fmt, ...)
 {
 #if SPT_TYPE != SPT_NONE
 	va_list ap;
-	char buf[1024];
+	char buf[1024], ptitle[1024];
 	size_t len;
+	int r;
 	extern char *__progname;
 #if SPT_TYPE == SPT_PSTAT
 	union pstun pst;
@@ -132,21 +139,26 @@ setproctitle(const char *fmt, ...)
 
 	strlcpy(buf, __progname, sizeof(buf));
 
+	r = -1;
 	va_start(ap, fmt);
 	if (fmt != NULL) {
 		len = strlcat(buf, ": ", sizeof(buf));
 		if (len < sizeof(buf))
-			vsnprintf(buf + len, sizeof(buf) - len , fmt, ap);
+			r = vsnprintf(buf + len, sizeof(buf) - len , fmt, ap);
 	}
 	va_end(ap);
+	if (r == -1 || (size_t)r >= sizeof(buf) - len)
+		return;
+	strnvis(ptitle, buf, sizeof(ptitle),
+	    VIS_CSTYLE|VIS_NL|VIS_TAB|VIS_OCTAL);
 
 #if SPT_TYPE == SPT_PSTAT
-	pst.pst_command = buf;
-	pstat(PSTAT_SETCMD, pst, strlen(buf), 0, 0);
+	pst.pst_command = ptitle;
+	pstat(PSTAT_SETCMD, pst, strlen(ptitle), 0, 0);
 #elif SPT_TYPE == SPT_REUSEARGV
 /*	debug("setproctitle: copy \"%s\" into len %d", 
 	    buf, argv_env_len); */
-	len = strlcpy(argv_start, buf, argv_env_len);
+	len = strlcpy(argv_start, ptitle, argv_env_len);
 	for(; len < argv_env_len; len++)
 		argv_start[len] = SPT_PADCHAR;
 #endif

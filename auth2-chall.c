@@ -1,3 +1,4 @@
+/* $OpenBSD: auth2-chall.c,v 1.42 2015/01/19 20:07:45 markus Exp $ */
 /*
  * Copyright (c) 2001 Markus Friedl.  All rights reserved.
  * Copyright (c) 2001 Per Allansson.  All rights reserved.
@@ -22,21 +23,33 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-#include "includes.h"
-RCSID("$OpenBSD: auth2-chall.c,v 1.20 2002/06/30 21:59:45 deraadt Exp $");
 
+#include "includes.h"
+
+#include <sys/types.h>
+
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "xmalloc.h"
 #include "ssh2.h"
+#include "key.h"
+#include "hostfile.h"
 #include "auth.h"
 #include "buffer.h"
 #include "packet.h"
-#include "xmalloc.h"
 #include "dispatch.h"
-#include "auth.h"
 #include "log.h"
+#include "misc.h"
+#include "servconf.h"
+
+/* import */
+extern ServerOptions options;
 
 static int auth2_challenge_start(Authctxt *);
 static int send_userauth_info_request(Authctxt *);
-static void input_userauth_info_response(int, u_int32_t, void *);
+static int input_userauth_info_response(int, u_int32_t, void *);
 
 #ifdef BSD_AUTH
 extern KbdintDevice bsdauth_device;
@@ -72,6 +85,21 @@ struct KbdintAuthctxt
 	u_int nreq;
 };
 
+#ifdef USE_PAM
+void
+remove_kbdint_device(const char *devname)
+{
+	int i, j;
+
+	for (i = 0; devices[i] != NULL; i++)
+		if (strcmp(devices[i]->name, devname) == 0) {
+			for (j = i; devices[j] != NULL; j++)
+				devices[j] = devices[j+1];
+			i--;
+		}
+}
+#endif
+
 static KbdintAuthctxt *
 kbdint_alloc(const char *devs)
 {
@@ -79,7 +107,12 @@ kbdint_alloc(const char *devs)
 	Buffer b;
 	int i;
 
-	kbdintctxt = xmalloc(sizeof(KbdintAuthctxt));
+#ifdef USE_PAM
+	if (!options.use_pam)
+		remove_kbdint_device("pam");
+#endif
+
+	kbdintctxt = xcalloc(1, sizeof(KbdintAuthctxt));
 	if (strcmp(devs, "") == 0) {
 		buffer_init(&b);
 		for (i = 0; devices[i]; i++) {
@@ -115,15 +148,13 @@ kbdint_free(KbdintAuthctxt *kbdintctxt)
 {
 	if (kbdintctxt->device)
 		kbdint_reset_device(kbdintctxt);
-	if (kbdintctxt->devices) {
-		xfree(kbdintctxt->devices);
-		kbdintctxt->devices = NULL;
-	}
-	xfree(kbdintctxt);
+	free(kbdintctxt->devices);
+	explicit_bzero(kbdintctxt, sizeof(*kbdintctxt));
+	free(kbdintctxt);
 }
 /* get next device */
 static int
-kbdint_next_device(KbdintAuthctxt *kbdintctxt)
+kbdint_next_device(Authctxt *authctxt, KbdintAuthctxt *kbdintctxt)
 {
 	size_t len;
 	char *t;
@@ -137,14 +168,18 @@ kbdint_next_device(KbdintAuthctxt *kbdintctxt)
 
 		if (len == 0)
 			break;
-		for (i = 0; devices[i]; i++)
+		for (i = 0; devices[i]; i++) {
+			if (!auth2_method_allowed(authctxt,
+			    "keyboard-interactive", devices[i]->name))
+				continue;
 			if (strncmp(kbdintctxt->devices, devices[i]->name, len) == 0)
 				kbdintctxt->device = devices[i];
+		}
 		t = kbdintctxt->devices;
 		kbdintctxt->devices = t[len] ? xstrdup(t+len+1) : NULL;
-		xfree(t);
+		free(t);
 		debug2("kbdint_next_device: devices %s", kbdintctxt->devices ?
-		   kbdintctxt->devices : "<empty>");
+		    kbdintctxt->devices : "<empty>");
 	} while (kbdintctxt->devices && !kbdintctxt->device);
 
 	return kbdintctxt->device ? 1 : 0;
@@ -174,7 +209,7 @@ auth2_challenge_stop(Authctxt *authctxt)
 {
 	/* unregister callback */
 	dispatch_set(SSH2_MSG_USERAUTH_INFO_RESPONSE, NULL);
-	if (authctxt->kbdintctxt != NULL)  {
+	if (authctxt->kbdintctxt != NULL) {
 		kbdint_free(authctxt->kbdintctxt);
 		authctxt->kbdintctxt = NULL;
 	}
@@ -189,7 +224,7 @@ auth2_challenge_start(Authctxt *authctxt)
 	debug2("auth2_challenge_start: devices %s",
 	    kbdintctxt->devices ?  kbdintctxt->devices : "<empty>");
 
-	if (kbdint_next_device(kbdintctxt) == 0) {
+	if (kbdint_next_device(authctxt, kbdintctxt) == 0) {
 		auth2_challenge_stop(authctxt);
 		return 0;
 	}
@@ -216,8 +251,7 @@ send_userauth_info_request(Authctxt *authctxt)
 {
 	KbdintAuthctxt *kbdintctxt;
 	char *name, *instr, **prompts;
-	int i;
-	u_int *echo_on;
+	u_int i, *echo_on;
 
 	kbdintctxt = authctxt->kbdintctxt;
 	if (kbdintctxt->device->query(kbdintctxt->ctxt,
@@ -237,22 +271,23 @@ send_userauth_info_request(Authctxt *authctxt)
 	packet_write_wait();
 
 	for (i = 0; i < kbdintctxt->nreq; i++)
-		xfree(prompts[i]);
-	xfree(prompts);
-	xfree(echo_on);
-	xfree(name);
-	xfree(instr);
+		free(prompts[i]);
+	free(prompts);
+	free(echo_on);
+	free(name);
+	free(instr);
 	return 1;
 }
 
-static void
+static int
 input_userauth_info_response(int type, u_int32_t seq, void *ctxt)
 {
 	Authctxt *authctxt = ctxt;
 	KbdintAuthctxt *kbdintctxt;
-	int i, authenticated = 0, res, len;
-	u_int nresp;
-	char **response = NULL, *method;
+	int authenticated = 0, res;
+	u_int i, nresp;
+	const char *devicename = NULL;
+	char **response = NULL;
 
 	if (authctxt == NULL)
 		fatal("input_userauth_info_response: no authctxt");
@@ -269,30 +304,24 @@ input_userauth_info_response(int type, u_int32_t seq, void *ctxt)
 	if (nresp > 100)
 		fatal("input_userauth_info_response: too many replies");
 	if (nresp > 0) {
-		response = xmalloc(nresp * sizeof(char *));
+		response = xcalloc(nresp, sizeof(char *));
 		for (i = 0; i < nresp; i++)
 			response[i] = packet_get_string(NULL);
 	}
 	packet_check_eom();
 
-	if (authctxt->valid) {
-		res = kbdintctxt->device->respond(kbdintctxt->ctxt,
-		    nresp, response);
-	} else {
-		res = -1;
-	}
+	res = kbdintctxt->device->respond(kbdintctxt->ctxt, nresp, response);
 
 	for (i = 0; i < nresp; i++) {
-		memset(response[i], 'r', strlen(response[i]));
-		xfree(response[i]);
+		explicit_bzero(response[i], strlen(response[i]));
+		free(response[i]);
 	}
-	if (response)
-		xfree(response);
+	free(response);
 
 	switch (res) {
 	case 0:
 		/* Success! */
-		authenticated = 1;
+		authenticated = authctxt->valid ? 1 : 0;
 		break;
 	case 1:
 		/* Authentication needs further interaction */
@@ -303,13 +332,7 @@ input_userauth_info_response(int type, u_int32_t seq, void *ctxt)
 		/* Failure! */
 		break;
 	}
-
-	len = strlen("keyboard-interactive") + 2 +
-		strlen(kbdintctxt->device->name);
-	method = xmalloc(len);
-	snprintf(method, len, "keyboard-interactive/%s",
-	    kbdintctxt->device->name);
-
+	devicename = kbdintctxt->device->name;
 	if (!authctxt->postponed) {
 		if (authenticated) {
 			auth2_challenge_stop(authctxt);
@@ -319,8 +342,9 @@ input_userauth_info_response(int type, u_int32_t seq, void *ctxt)
 			auth2_challenge_start(authctxt);
 		}
 	}
-	userauth_finish(authctxt, authenticated, method);
-	xfree(method);
+	userauth_finish(authctxt, authenticated, "keyboard-interactive",
+	    devicename);
+	return 0;
 }
 
 void

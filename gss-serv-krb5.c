@@ -1,4 +1,4 @@
-/*	$OpenBSD: gss-serv-krb5.c,v 1.2 2003/11/21 11:57:03 djm Exp $	*/
+/* $OpenBSD: gss-serv-krb5.c,v 1.8 2013/07/20 01:55:13 djm Exp $ */
 
 /*
  * Copyright (c) 2001-2003 Simon Wilkinson. All rights reserved.
@@ -29,23 +29,31 @@
 #ifdef GSSAPI
 #ifdef KRB5
 
-#include "auth.h"
+#include <sys/types.h>
+
+#include <stdarg.h>
+#include <string.h>
+
 #include "xmalloc.h"
+#include "key.h"
+#include "hostfile.h"
+#include "auth.h"
 #include "log.h"
+#include "misc.h"
 #include "servconf.h"
 
+#include "buffer.h"
 #include "ssh-gss.h"
 
 extern ServerOptions options;
 
 #ifdef HEIMDAL
 # include <krb5.h>
-#else
-# ifdef HAVE_GSSAPI_KRB5
-#  include <gssapi_krb5.h>
-# elif HAVE_GSSAPI_GSSAPI_KRB5
-#  include <gssapi/gssapi_krb5.h>
-# endif
+#endif
+#ifdef HAVE_GSSAPI_KRB5_H
+# include <gssapi_krb5.h>
+#elif HAVE_GSSAPI_GSSAPI_KRB5_H
+# include <gssapi/gssapi_krb5.h>
 #endif
 
 static krb5_context krb_context = NULL;
@@ -53,7 +61,7 @@ static krb5_context krb_context = NULL;
 /* Initialise the krb5 library, for the stuff that GSSAPI won't do */
 
 static int
-ssh_gssapi_krb5_init()
+ssh_gssapi_krb5_init(void)
 {
 	krb5_error_code problem;
 
@@ -65,9 +73,6 @@ ssh_gssapi_krb5_init()
 		logit("Cannot initialize krb5 context");
 		return 0;
 	}
-#ifdef KRB5_INIT_ETS
-	krb5_init_ets(krb_context);
-#endif
 
 	return 1;
 }
@@ -82,14 +87,16 @@ ssh_gssapi_krb5_userok(ssh_gssapi_client *client, char *name)
 {
 	krb5_principal princ;
 	int retval;
+	const char *errmsg;
 
 	if (ssh_gssapi_krb5_init() == 0)
 		return 0;
 
 	if ((retval = krb5_parse_name(krb_context, client->exportedname.value,
 	    &princ))) {
-		logit("krb5_parse_name(): %.100s",
-		    krb5_get_err_text(krb_context, retval));
+		errmsg = krb5_get_error_message(krb_context, retval);
+		logit("krb5_parse_name(): %.100s", errmsg);
+		krb5_free_error_message(krb_context, errmsg);
 		return 0;
 	}
 	if (krb5_kuserok(krb_context, princ, name)) {
@@ -115,6 +122,7 @@ ssh_gssapi_krb5_storecreds(ssh_gssapi_client *client)
 	krb5_principal princ;
 	OM_uint32 maj_status, min_status;
 	int len;
+	const char *errmsg;
 
 	if (client->creds == NULL) {
 		debug("No credentials stored");
@@ -125,50 +133,40 @@ ssh_gssapi_krb5_storecreds(ssh_gssapi_client *client)
 		return;
 
 #ifdef HEIMDAL
+# ifdef HAVE_KRB5_CC_NEW_UNIQUE
+	if ((problem = krb5_cc_new_unique(krb_context, krb5_fcc_ops.prefix,
+	    NULL, &ccache)) != 0) {
+		errmsg = krb5_get_error_message(krb_context, problem);
+		logit("krb5_cc_new_unique(): %.100s", errmsg);
+# else
 	if ((problem = krb5_cc_gen_new(krb_context, &krb5_fcc_ops, &ccache))) {
-		logit("krb5_cc_gen_new(): %.100s",
-		    krb5_get_err_text(krb_context, problem));
+	    logit("krb5_cc_gen_new(): %.100s",
+		krb5_get_err_text(krb_context, problem));
+# endif
+		krb5_free_error_message(krb_context, errmsg);
 		return;
 	}
 #else
-	{
-		int tmpfd;
-		char ccname[40];
-
-		snprintf(ccname, sizeof(ccname),
-		    "FILE:/tmp/krb5cc_%d_XXXXXX", geteuid());
-
-		if ((tmpfd = mkstemp(ccname + strlen("FILE:"))) == -1) {
-			logit("mkstemp(): %.100s", strerror(errno));
-			problem = errno;
-			return;
-		}
-		if (fchmod(tmpfd, S_IRUSR | S_IWUSR) == -1) {
-			logit("fchmod(): %.100s", strerror(errno));
-			close(tmpfd);
-			problem = errno;
-			return;
-		}
-		close(tmpfd);
-		if ((problem = krb5_cc_resolve(krb_context, ccname, &ccache))) {
-			logit("krb5_cc_resolve(): %.100s",
-			    krb5_get_err_text(krb_context, problem));
-			return;
-		}
+	if ((problem = ssh_krb5_cc_gen(krb_context, &ccache))) {
+		errmsg = krb5_get_error_message(krb_context, problem);
+		logit("ssh_krb5_cc_gen(): %.100s", errmsg);
+		krb5_free_error_message(krb_context, errmsg);
+		return;
 	}
 #endif	/* #ifdef HEIMDAL */
 
 	if ((problem = krb5_parse_name(krb_context,
 	    client->exportedname.value, &princ))) {
-		logit("krb5_parse_name(): %.100s",
-		    krb5_get_err_text(krb_context, problem));
-		krb5_cc_destroy(krb_context, ccache);
+		errmsg = krb5_get_error_message(krb_context, problem);
+		logit("krb5_parse_name(): %.100s", errmsg);
+		krb5_free_error_message(krb_context, errmsg);
 		return;
 	}
 
 	if ((problem = krb5_cc_initialize(krb_context, ccache, princ))) {
-		logit("krb5_cc_initialize(): %.100s",
-		    krb5_get_err_text(krb_context, problem));
+		errmsg = krb5_get_error_message(krb_context, problem);
+		logit("krb5_cc_initialize(): %.100s", errmsg);
+		krb5_free_error_message(krb_context, errmsg);
 		krb5_free_principal(krb_context, princ);
 		krb5_cc_destroy(krb_context, ccache);
 		return;

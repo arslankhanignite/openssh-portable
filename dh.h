@@ -1,4 +1,4 @@
-/*	$OpenBSD: dh.h,v 1.7 2001/06/26 17:27:23 markus Exp $	*/
+/* $OpenBSD: dh.h,v 1.13 2015/05/27 23:39:18 dtucker Exp $ */
 
 /*
  * Copyright (c) 2000 Niels Provos.  All rights reserved.
@@ -36,13 +36,40 @@ DH	*choose_dh(int, int, int);
 DH	*dh_new_group_asc(const char *, const char *);
 DH	*dh_new_group(BIGNUM *, BIGNUM *);
 DH	*dh_new_group1(void);
+DH	*dh_new_group14(void);
+DH	*dh_new_group_fallback(int);
 
-void	 dh_gen_key(DH *, int);
+int	 dh_gen_key(DH *, int);
 int	 dh_pub_is_valid(DH *, BIGNUM *);
 
-int	 dh_estimate(int);
+u_int	 dh_estimate(int);
 
+/* Min and max values from RFC4419. */
 #define DH_GRP_MIN	1024
 #define DH_GRP_MAX	8192
+
+/*
+ * Values for "type" field of moduli(5)
+ * Specifies the internal structure of the prime modulus.
+ */
+#define MODULI_TYPE_UNKNOWN		(0)
+#define MODULI_TYPE_UNSTRUCTURED	(1)
+#define MODULI_TYPE_SAFE		(2)
+#define MODULI_TYPE_SCHNORR		(3)
+#define MODULI_TYPE_SOPHIE_GERMAIN	(4)
+#define MODULI_TYPE_STRONG		(5)
+
+/*
+ * Values for "tests" field of moduli(5)
+ * Specifies the methods used in checking for primality.
+ * Usually, more than one test is used.
+ */
+#define MODULI_TESTS_UNTESTED		(0x00)
+#define MODULI_TESTS_COMPOSITE		(0x01)
+#define MODULI_TESTS_SIEVE		(0x02)
+#define MODULI_TESTS_MILLER_RABIN	(0x04)
+#define MODULI_TESTS_JACOBI		(0x08)
+#define MODULI_TESTS_ELLIPTIC		(0x10)
+
 
 #endif

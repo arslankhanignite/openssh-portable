@@ -1,3 +1,4 @@
+/* $OpenBSD: auth-rsa.c,v 1.90 2015/01/28 22:36:00 djm Exp $ */
 /*
  * Author: Tatu Ylonen <ylo@cs.hut.fi>
  * Copyright (c) 1995 Tatu Ylonen <ylo@cs.hut.fi>, Espoo, Finland
@@ -14,26 +15,41 @@
  */
 
 #include "includes.h"
-RCSID("$OpenBSD: auth-rsa.c,v 1.58 2003/11/04 08:54:09 djm Exp $");
+
+#ifdef WITH_SSH1
+
+#include <sys/types.h>
+#include <sys/stat.h>
 
 #include <openssl/rsa.h>
-#include <openssl/md5.h>
 
+#include <pwd.h>
+#include <stdio.h>
+#include <stdarg.h>
+#include <string.h>
+
+#include "xmalloc.h"
 #include "rsa.h"
 #include "packet.h"
-#include "xmalloc.h"
 #include "ssh1.h"
-#include "mpaux.h"
 #include "uidswap.h"
 #include "match.h"
-#include "auth-options.h"
+#include "buffer.h"
 #include "pathnames.h"
 #include "log.h"
+#include "misc.h"
 #include "servconf.h"
-#include "auth.h"
+#include "key.h"
+#include "auth-options.h"
 #include "hostfile.h"
+#include "auth.h"
+#ifdef GSSAPI
+#include "ssh-gss.h"
+#endif
 #include "monitor_wrap.h"
 #include "ssh.h"
+
+#include "digest.h"
 
 /* import */
 extern ServerOptions options;
@@ -50,7 +66,7 @@ extern u_char session_id[16];
  *   options bits e n comment
  * where bits, e and n are decimal numbers,
  * and comment is any string of characters up to newline.  The maximum
- * length of a line is 8000 characters.  See the documentation for a
+ * length of a line is SSH_MAX_PUBKEY_BYTES characters.  See sshd(8) for a
  * description of the options.
  */
 
@@ -63,10 +79,12 @@ auth_rsa_generate_challenge(Key *key)
 	if ((challenge = BN_new()) == NULL)
 		fatal("auth_rsa_generate_challenge: BN_new() failed");
 	/* Generate a random challenge. */
-	BN_rand(challenge, 256, 0, 0);
+	if (BN_rand(challenge, 256, 0, 0) == 0)
+		fatal("auth_rsa_generate_challenge: BN_rand failed");
 	if ((ctx = BN_CTX_new()) == NULL)
-		fatal("auth_rsa_generate_challenge: BN_CTX_new() failed");
-	BN_mod(challenge, challenge, key->rsa->n, ctx);
+		fatal("auth_rsa_generate_challenge: BN_CTX_new failed");
+	if (BN_mod(challenge, challenge, key->rsa->n, ctx) == 0)
+		fatal("auth_rsa_generate_challenge: BN_mod failed");
 	BN_CTX_free(ctx);
 
 	return challenge;
@@ -76,12 +94,13 @@ int
 auth_rsa_verify_response(Key *key, BIGNUM *challenge, u_char response[16])
 {
 	u_char buf[32], mdbuf[16];
-	MD5_CTX md;
+	struct ssh_digest_ctx *md;
 	int len;
 
 	/* don't allow short keys */
 	if (BN_num_bits(key->rsa->n) < SSH_RSA_MINIMUM_MODULUS_SIZE) {
-		error("auth_rsa_verify_response: RSA modulus too small: %d < minimum %d bits",
+		error("%s: RSA modulus too small: %d < minimum %d bits",
+		    __func__,
 		    BN_num_bits(key->rsa->n), SSH_RSA_MINIMUM_MODULUS_SIZE);
 		return (0);
 	}
@@ -89,16 +108,18 @@ auth_rsa_verify_response(Key *key, BIGNUM *challenge, u_char response[16])
 	/* The response is MD5 of decrypted challenge plus session id. */
 	len = BN_num_bytes(challenge);
 	if (len <= 0 || len > 32)
-		fatal("auth_rsa_verify_response: bad challenge length %d", len);
+		fatal("%s: bad challenge length %d", __func__, len);
 	memset(buf, 0, 32);
 	BN_bn2bin(challenge, buf + 32 - len);
-	MD5_Init(&md);
-	MD5_Update(&md, buf, 32);
-	MD5_Update(&md, session_id, 16);
-	MD5_Final(mdbuf, &md);
+	if ((md = ssh_digest_start(SSH_DIGEST_MD5)) == NULL ||
+	    ssh_digest_update(md, buf, 32) < 0 ||
+	    ssh_digest_update(md, session_id, 16) < 0 ||
+	    ssh_digest_final(md, mdbuf, sizeof(mdbuf)) < 0)
+		fatal("%s: md5 failed", __func__);
+	ssh_digest_free(md);
 
 	/* Verify that the response is the original challenge. */
-	if (memcmp(response, mdbuf, 16) != 0) {
+	if (timingsafe_bcmp(response, mdbuf, 16) != 0) {
 		/* Wrong answer. */
 		return (0);
 	}
@@ -125,7 +146,8 @@ auth_rsa_challenge_dialog(Key *key)
 	challenge = PRIVSEP(auth_rsa_generate_challenge(key));
 
 	/* Encrypt the challenge with the public key. */
-	rsa_public_encrypt(encrypted_challenge, challenge, key->rsa);
+	if (rsa_public_encrypt(encrypted_challenge, challenge, key->rsa) != 0)
+		fatal("%s: rsa_public_encrypt failed", __func__);
 
 	/* Send the encrypted challenge to the client. */
 	packet_start(SSH_SMSG_AUTH_RSA_CHALLENGE);
@@ -137,7 +159,7 @@ auth_rsa_challenge_dialog(Key *key)
 	/* Wait for a response. */
 	packet_read_expect(SSH_CMSG_AUTH_RSA_RESPONSE);
 	for (i = 0; i < 16; i++)
-		response[i] = packet_get_char();
+		response[i] = (u_char)packet_get_char();
 	packet_check_eom();
 
 	success = PRIVSEP(auth_rsa_verify_response(key, challenge, response));
@@ -145,68 +167,30 @@ auth_rsa_challenge_dialog(Key *key)
 	return (success);
 }
 
-/*
- * check if there's user key matching client_n,
- * return key if login is allowed, NULL otherwise
- */
-
-int
-auth_rsa_key_allowed(struct passwd *pw, BIGNUM *client_n, Key **rkey)
+static int
+rsa_key_allowed_in_file(struct passwd *pw, char *file,
+    const BIGNUM *client_n, Key **rkey)
 {
-	char line[8192], *file;
-	int allowed = 0;
-	u_int bits;
+	char *fp, line[SSH_MAX_PUBKEY_BYTES];
+	int allowed = 0, bits;
 	FILE *f;
 	u_long linenum = 0;
-	struct stat st;
 	Key *key;
 
-	/* Temporarily use the user's uid. */
-	temporarily_use_uid(pw);
-
-	/* The authorized keys. */
-	file = authorized_keys_file(pw);
 	debug("trying public RSA key file %s", file);
-
-	/* Fail quietly if file does not exist */
-	if (stat(file, &st) < 0) {
-		/* Restore the privileged uid. */
-		restore_uid();
-		xfree(file);
-		return (0);
-	}
-	/* Open the file containing the authorized keys. */
-	f = fopen(file, "r");
-	if (!f) {
-		/* Restore the privileged uid. */
-		restore_uid();
-		xfree(file);
-		return (0);
-	}
-	if (options.strict_modes &&
-	    secure_filename(f, file, pw, line, sizeof(line)) != 0) {
-		xfree(file);
-		fclose(f);
-		logit("Authentication refused: %s", line);
-		restore_uid();
-		return (0);
-	}
-
-	/* Flag indicating whether the key is allowed. */
-	allowed = 0;
-
-	key = key_new(KEY_RSA1);
+	if ((f = auth_openkeyfile(file, pw, options.strict_modes)) == NULL)
+		return 0;
 
 	/*
 	 * Go though the accepted keys, looking for the current key.  If
 	 * found, perform a challenge-response dialog to verify that the
 	 * user really has the corresponding private key.
 	 */
-	while (fgets(line, sizeof(line), f)) {
+	key = key_new(KEY_RSA1);
+	while (read_keyfile_line(f, file, line, sizeof(line), &linenum) != -1) {
 		char *cp;
-		char *options;
-
-		linenum++;
+		char *key_options;
+		int keybits;
 
 		/* Skip leading whitespace, empty and comment lines. */
 		for (cp = line; *cp == ' ' || *cp == '\t'; cp++)
@@ -222,7 +206,7 @@ auth_rsa_key_allowed(struct passwd *pw, BIGNUM *client_n, Key **rkey)
 		 */
 		if (*cp < '0' || *cp > '9') {
 			int quoted = 0;
-			options = cp;
+			key_options = cp;
 			for (; *cp && (quoted || (*cp != ' ' && *cp != '\t')); cp++) {
 				if (*cp == '\\' && cp[1] == '"')
 					cp++;	/* Skip both */
@@ -230,7 +214,7 @@ auth_rsa_key_allowed(struct passwd *pw, BIGNUM *client_n, Key **rkey)
 					quoted = !quoted;
 			}
 		} else
-			options = NULL;
+			key_options = NULL;
 
 		/* Parse the key from the line. */
 		if (hostfile_read_key(&cp, &bits, key) == 0) {
@@ -240,34 +224,46 @@ auth_rsa_key_allowed(struct passwd *pw, BIGNUM *client_n, Key **rkey)
 		}
 		/* cp now points to the comment part. */
 
-		/* Check if the we have found the desired key (identified by its modulus). */
+		/*
+		 * Check if the we have found the desired key (identified
+		 * by its modulus).
+		 */
 		if (BN_cmp(key->rsa->n, client_n) != 0)
 			continue;
 
 		/* check the real bits  */
-		if (bits != BN_num_bits(key->rsa->n))
+		keybits = BN_num_bits(key->rsa->n);
+		if (keybits < 0 || bits != keybits)
 			logit("Warning: %s, line %lu: keysize mismatch: "
 			    "actual %d vs. announced %d.",
 			    file, linenum, BN_num_bits(key->rsa->n), bits);
+
+		if ((fp = sshkey_fingerprint(key, options.fingerprint_hash,
+		    SSH_FP_DEFAULT)) == NULL)
+			continue;
+		debug("matching key found: file %s, line %lu %s %s",
+		    file, linenum, key_type(key), fp);
+		free(fp);
+
+		/* Never accept a revoked key */
+		if (auth_key_is_revoked(key))
+			break;
 
 		/* We have found the desired key. */
 		/*
 		 * If our options do not allow this key to be used,
 		 * do not send challenge.
 		 */
-		if (!auth_parse_options(pw, options, file, linenum))
+		if (!auth_parse_options(pw, key_options, file, linenum))
 			continue;
-
+		if (key_is_cert_authority)
+			continue;
 		/* break out, this key is allowed */
 		allowed = 1;
 		break;
 	}
 
-	/* Restore the privileged uid. */
-	restore_uid();
-
 	/* Close the file. */
-	xfree(file);
 	fclose(f);
 
 	/* return key if allowed */
@@ -275,7 +271,35 @@ auth_rsa_key_allowed(struct passwd *pw, BIGNUM *client_n, Key **rkey)
 		*rkey = key;
 	else
 		key_free(key);
-	return (allowed);
+
+	return allowed;
+}
+
+/*
+ * check if there's user key matching client_n,
+ * return key if login is allowed, NULL otherwise
+ */
+
+int
+auth_rsa_key_allowed(struct passwd *pw, BIGNUM *client_n, Key **rkey)
+{
+	char *file;
+	u_int i, allowed = 0;
+
+	temporarily_use_uid(pw);
+
+	for (i = 0; !allowed && i < options.num_authkeys_files; i++) {
+		if (strcasecmp(options.authorized_keys_files[i], "none") == 0)
+			continue;
+		file = expand_authorized_keys(
+		    options.authorized_keys_files[i], pw);
+		allowed = rsa_key_allowed_in_file(pw, file, client_n, rkey);
+		free(file);
+	}
+
+	restore_uid();
+
+	return allowed;
 }
 
 /*
@@ -287,7 +311,6 @@ int
 auth_rsa(Authctxt *authctxt, BIGNUM *client_n)
 {
 	Key *key;
-	char *fp;
 	struct passwd *pw = authctxt->pw;
 
 	/* no user given */
@@ -317,12 +340,10 @@ auth_rsa(Authctxt *authctxt, BIGNUM *client_n)
 	 * options; this will be reset if the options cause the
 	 * authentication to be rejected.
 	 */
-	fp = key_fingerprint(key, SSH_FP_MD5, SSH_FP_HEX);
-	verbose("Found matching %s key: %s",
-	    key_type(key), fp);
-	xfree(fp);
-	key_free(key);
+	pubkey_auth_info(authctxt, key, NULL);
 
 	packet_send_debug("RSA authentication accepted.");
 	return (1);
 }
+
+#endif /* WITH_SSH1 */

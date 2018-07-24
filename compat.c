@@ -1,3 +1,4 @@
+/* $OpenBSD: compat.c,v 1.94 2015/05/26 23:23:40 dtucker Exp $ */
 /*
  * Copyright (c) 1999, 2000, 2001, 2002 Markus Friedl.  All rights reserved.
  *
@@ -23,11 +24,16 @@
  */
 
 #include "includes.h"
-RCSID("$OpenBSD: compat.c,v 1.70 2003/11/02 11:01:03 markus Exp $");
 
+#include <sys/types.h>
+
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
+
+#include "xmalloc.h"
 #include "buffer.h"
 #include "packet.h"
-#include "xmalloc.h"
 #include "compat.h"
 #include "log.h"
 #include "match.h"
@@ -39,6 +45,8 @@ int datafellows = 0;
 void
 enable_compat20(void)
 {
+	if (compat20)
+		return;
 	debug("Enabling compatibility mode for protocol 2.0");
 	compat20 = 1;
 }
@@ -49,7 +57,7 @@ enable_compat13(void)
 	compat13 = 1;
 }
 /* datafellows bug compatibility */
-void
+u_int
 compat_datafellows(const char *version)
 {
 	int i;
@@ -62,26 +70,35 @@ compat_datafellows(const char *version)
 		  "OpenSSH_2.1*,"
 		  "OpenSSH_2.2*",	SSH_OLD_SESSIONID|SSH_BUG_BANNER|
 					SSH_OLD_DHGEX|SSH_BUG_NOREKEY|
-					SSH_BUG_EXTEOF},
+					SSH_BUG_EXTEOF|SSH_OLD_FORWARD_ADDR},
 		{ "OpenSSH_2.3.0*",	SSH_BUG_BANNER|SSH_BUG_BIGENDIANAES|
 					SSH_OLD_DHGEX|SSH_BUG_NOREKEY|
-					SSH_BUG_EXTEOF},
+					SSH_BUG_EXTEOF|SSH_OLD_FORWARD_ADDR},
 		{ "OpenSSH_2.3.*",	SSH_BUG_BIGENDIANAES|SSH_OLD_DHGEX|
-					SSH_BUG_NOREKEY|SSH_BUG_EXTEOF},
+					SSH_BUG_NOREKEY|SSH_BUG_EXTEOF|
+					SSH_OLD_FORWARD_ADDR},
 		{ "OpenSSH_2.5.0p1*,"
 		  "OpenSSH_2.5.1p1*",
 					SSH_BUG_BIGENDIANAES|SSH_OLD_DHGEX|
-					SSH_BUG_NOREKEY|SSH_BUG_EXTEOF},
+					SSH_BUG_NOREKEY|SSH_BUG_EXTEOF|
+					SSH_OLD_FORWARD_ADDR},
 		{ "OpenSSH_2.5.0*,"
 		  "OpenSSH_2.5.1*,"
 		  "OpenSSH_2.5.2*",	SSH_OLD_DHGEX|SSH_BUG_NOREKEY|
-					SSH_BUG_EXTEOF},
-		{ "OpenSSH_2.5.3*",	SSH_BUG_NOREKEY|SSH_BUG_EXTEOF},
+					SSH_BUG_EXTEOF|SSH_OLD_FORWARD_ADDR},
+		{ "OpenSSH_2.5.3*",	SSH_BUG_NOREKEY|SSH_BUG_EXTEOF|
+					SSH_OLD_FORWARD_ADDR},
 		{ "OpenSSH_2.*,"
 		  "OpenSSH_3.0*,"
-		  "OpenSSH_3.1*",	SSH_BUG_EXTEOF},
+		  "OpenSSH_3.1*",	SSH_BUG_EXTEOF|SSH_OLD_FORWARD_ADDR},
+		{ "OpenSSH_3.*",	SSH_OLD_FORWARD_ADDR },
 		{ "Sun_SSH_1.0*",	SSH_BUG_NOREKEY|SSH_BUG_EXTEOF},
-		{ "OpenSSH*",		0 },
+		{ "OpenSSH_4*",		0 },
+		{ "OpenSSH_5*",		SSH_NEW_OPENSSH|SSH_BUG_DYNAMIC_RPORT},
+		{ "OpenSSH_6.6.1*",	SSH_NEW_OPENSSH},
+		{ "OpenSSH_6.5*,"
+		  "OpenSSH_6.6*",	SSH_NEW_OPENSSH|SSH_BUG_CURVE25519PAD},
+		{ "OpenSSH*",		SSH_NEW_OPENSSH },
 		{ "*MindTerm*",		0 },
 		{ "2.1.0*",		SSH_BUG_SIGBLOB|SSH_BUG_HMAC|
 					SSH_OLD_SESSIONID|SSH_BUG_DEBUG|
@@ -123,7 +140,8 @@ compat_datafellows(const char *version)
 		{ "2.3.*",		SSH_BUG_DEBUG|SSH_BUG_RSASIGMD5|
 					SSH_BUG_FIRSTKEX },
 		{ "2.4",		SSH_OLD_SESSIONID },	/* Van Dyke */
-		{ "2.*",		SSH_BUG_DEBUG|SSH_BUG_FIRSTKEX },
+		{ "2.*",		SSH_BUG_DEBUG|SSH_BUG_FIRSTKEX|
+					SSH_BUG_RFWD_ADDR },
 		{ "3.0.*",		SSH_BUG_DEBUG },
 		{ "3.0 SecureCRT*",	SSH_OLD_SESSIONID },
 		{ "1.7 SecureFX*",	SSH_OLD_SESSIONID },
@@ -134,6 +152,7 @@ compat_datafellows(const char *version)
 		  "1.2.22*",		SSH_BUG_IGNOREMSG },
 		{ "1.3.2*",		/* F-Secure */
 					SSH_BUG_IGNOREMSG },
+		{ "Cisco-1.*",		SSH_BUG_DHGEX_LARGE },
 		{ "*SSH Compatible Server*",			/* Netscreen */
 					SSH_BUG_PASSWORDPAD },
 		{ "*OSU_0*,"
@@ -147,21 +166,42 @@ compat_datafellows(const char *version)
 		  "OSU_1.5alpha3*",	SSH_BUG_PASSWORDPAD },
 		{ "*SSH_Version_Mapper*",
 					SSH_BUG_SCANNER },
+		{ "PuTTY-Release-0.5*," /* 0.50-0.57, DH-GEX in >=0.52 */
+		  "PuTTY_Release_0.5*,"	/* 0.58-0.59 */
+		  "PuTTY_Release_0.60*,"
+		  "PuTTY_Release_0.61*,"
+		  "PuTTY_Release_0.62*,"
+		  "PuTTY_Release_0.63*,"
+		  "PuTTY_Release_0.64*",
+					SSH_OLD_DHGEX },
 		{ "Probe-*",
 					SSH_BUG_PROBE },
+		{ "TeraTerm SSH*,"
+		  "TTSSH/1.5.*,"
+		  "TTSSH/2.1*,"
+		  "TTSSH/2.2*,"
+		  "TTSSH/2.3*,"
+		  "TTSSH/2.4*,"
+		  "TTSSH/2.5*,"
+		  "TTSSH/2.6*,"
+		  "TTSSH/2.70*,"
+		  "TTSSH/2.71*,"
+		  "TTSSH/2.72*",	SSH_BUG_HOSTKEYS },
+		{ "WinSCP*",		SSH_OLD_DHGEX },
 		{ NULL,			0 }
 	};
 
 	/* process table, return first match */
 	for (i = 0; check[i].pat; i++) {
-		if (match_pattern_list(version, check[i].pat,
-		    strlen(check[i].pat), 0) == 1) {
-			debug("match: %s pat %s", version, check[i].pat);
-			datafellows = check[i].bugs;
-			return;
+		if (match_pattern_list(version, check[i].pat, 0) == 1) {
+			debug("match: %s pat %s compat 0x%08x",
+			    version, check[i].pat, check[i].bugs);
+			datafellows = check[i].bugs;	/* XXX for now */
+			return check[i].bugs;
 		}
 	}
 	debug("no match: %s", version);
+	return 0;
 }
 
 #define	SEP	","
@@ -173,13 +213,17 @@ proto_spec(const char *spec)
 
 	if (spec == NULL)
 		return ret;
-	q = s = xstrdup(spec);
+	q = s = strdup(spec);
+	if (s == NULL)
+		return ret;
 	for ((p = strsep(&q, SEP)); p && *p != '\0'; (p = strsep(&q, SEP))) {
 		switch (atoi(p)) {
 		case 1:
+#ifdef WITH_SSH1
 			if (ret == SSH_PROTO_UNKNOWN)
 				ret |= SSH_PROTO_1_PREFERRED;
 			ret |= SSH_PROTO_1;
+#endif
 			break;
 		case 2:
 			ret |= SSH_PROTO_2;
@@ -189,37 +233,80 @@ proto_spec(const char *spec)
 			break;
 		}
 	}
-	xfree(s);
+	free(s);
 	return ret;
+}
+
+/*
+ * Filters a proposal string, excluding any algorithm matching the 'filter'
+ * pattern list.
+ */
+static char *
+filter_proposal(char *proposal, const char *filter)
+{
+	Buffer b;
+	char *orig_prop, *fix_prop;
+	char *cp, *tmp;
+
+	buffer_init(&b);
+	tmp = orig_prop = xstrdup(proposal);
+	while ((cp = strsep(&tmp, ",")) != NULL) {
+		if (match_pattern_list(cp, filter, 0) != 1) {
+			if (buffer_len(&b) > 0)
+				buffer_append(&b, ",", 1);
+			buffer_append(&b, cp, strlen(cp));
+		} else
+			debug2("Compat: skipping algorithm \"%s\"", cp);
+	}
+	buffer_append(&b, "\0", 1);
+	fix_prop = xstrdup((char *)buffer_ptr(&b));
+	buffer_free(&b);
+	free(orig_prop);
+
+	return fix_prop;
 }
 
 char *
 compat_cipher_proposal(char *cipher_prop)
 {
-	Buffer b;
-	char *orig_prop, *fix_ciphers;
-	char *cp, *tmp;
-
 	if (!(datafellows & SSH_BUG_BIGENDIANAES))
-		return(cipher_prop);
-
-	buffer_init(&b);
-	tmp = orig_prop = xstrdup(cipher_prop);
-	while ((cp = strsep(&tmp, ",")) != NULL) {
-		if (strncmp(cp, "aes", 3) != 0) {
-			if (buffer_len(&b) > 0)
-				buffer_append(&b, ",", 1);
-			buffer_append(&b, cp, strlen(cp));
-		}
-	}
-	buffer_append(&b, "\0", 1);
-	fix_ciphers = xstrdup(buffer_ptr(&b));
-	buffer_free(&b);
-	xfree(orig_prop);
-	debug2("Original cipher proposal: %s", cipher_prop);
-	debug2("Compat cipher proposal: %s", fix_ciphers);
-	if (!*fix_ciphers)
-		fatal("No available ciphers found.");
-
-	return(fix_ciphers);
+		return cipher_prop;
+	debug2("%s: original cipher proposal: %s", __func__, cipher_prop);
+	cipher_prop = filter_proposal(cipher_prop, "aes*");
+	debug2("%s: compat cipher proposal: %s", __func__, cipher_prop);
+	if (*cipher_prop == '\0')
+		fatal("No supported ciphers found");
+	return cipher_prop;
 }
+
+char *
+compat_pkalg_proposal(char *pkalg_prop)
+{
+	if (!(datafellows & SSH_BUG_RSASIGMD5))
+		return pkalg_prop;
+	debug2("%s: original public key proposal: %s", __func__, pkalg_prop);
+	pkalg_prop = filter_proposal(pkalg_prop, "ssh-rsa");
+	debug2("%s: compat public key proposal: %s", __func__, pkalg_prop);
+	if (*pkalg_prop == '\0')
+		fatal("No supported PK algorithms found");
+	return pkalg_prop;
+}
+
+char *
+compat_kex_proposal(char *p)
+{
+	if ((datafellows & (SSH_BUG_CURVE25519PAD|SSH_OLD_DHGEX)) == 0)
+		return p;
+	debug2("%s: original KEX proposal: %s", __func__, p);
+	if ((datafellows & SSH_BUG_CURVE25519PAD) != 0)
+		p = filter_proposal(p, "curve25519-sha256@libssh.org");
+	if ((datafellows & SSH_OLD_DHGEX) != 0) {
+		p = filter_proposal(p, "diffie-hellman-group-exchange-sha256");
+		p = filter_proposal(p, "diffie-hellman-group-exchange-sha1");
+	}
+	debug2("%s: compat KEX proposal: %s", __func__, p);
+	if (*p == '\0')
+		fatal("No supported key exchange algorithms found");
+	return p;
+}
+
